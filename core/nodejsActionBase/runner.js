@@ -41,6 +41,21 @@ function NodeActionRunner() {
     };
 
     this.init = function(message) {
+        function makeModule(message) {
+            if (message.binary) {
+                // The code is a base64-encoded zip file.
+                return unzipInTmpDir(message.code).then(function (moduleDir) {
+                    return 'require("' + moduleDir + '").' + message.main;
+                });
+            } else {
+                var code = message.code + '\nmodule.exports = ' + message.main;
+                // The code is a plain old JS file.
+                return writeInTmpFile("action.js", code, "utf8").then(function (moduleFile) {
+                    return 'require("' + moduleFile + '")';
+                });
+            }
+        }
+
         function assertMainIsFunction() {
             if (typeof thisRunner.userScriptMain !== 'function') {
                 throw "Action entrypoint '" + message.main + "' is not a function.";
@@ -48,34 +63,20 @@ function NodeActionRunner() {
         }
 
         // Loading the user code.
-        if (message.binary) {
-            // The code is a base64-encoded zip file.
-            return unzipInTmpDir(message.code).then(function (moduleDir) {
-                try {
-                    thisRunner.userScriptMain = eval('require("' + moduleDir + '").' + message.main);
-                    assertMainIsFunction();
-                    // The value 'true' has no special meaning here;
-                    // the successful state is fully reflected in the
-                    // successful resolution of the promise.
-                    return true;
-                } catch (e) {
-                    return Promise.reject(e);
-                }
-            }).catch(function (error) {
-                return Promise.reject(error);
-            });
-        } else {
-            // The code is a plain old JS file.
+        return makeModule(message).then(function (mainFun) {
             try {
-                eval(message.code);
-                thisRunner.userScriptMain = eval(message.main);
+                thisRunner.userScriptMain = eval(mainFun);
                 assertMainIsFunction();
-                // See comment above about 'true'; it has no specific meaning.
-                return Promise.resolve(true);
+                // The value 'true' has no special meaning here;
+                // the successful state is fully reflected in the
+                // successful resolution of the promise.
+                return true;
             } catch (e) {
                 return Promise.reject(e);
             }
-        }
+        }).catch(function (error) {
+            return Promise.reject(error);
+        });
     };
 
     // Returns a Promise with the result of the user code invocation.
@@ -120,23 +121,10 @@ function NodeActionRunner() {
     //   1) Node 0.12 doesn't have many of the useful fs functions.
     //   2) We know in which environment we're running.
     function unzipInTmpDir(base64) {
-        var mkTempCmd = "mktemp -d XXXXXXXX";
-        return exec(mkTempCmd).then(function (tmpDir1) {
-            return new Promise(
-                function (resolve, reject) {
-                    var zipFile = path.join(tmpDir1, "action.zip");
-                    fs.writeFile(zipFile, base64, "base64", function (err) {
-                        if(err) {
-                            reject("There was an error reading the action archive.");
-                        }
-                        resolve(zipFile);
-                    });
-                }
-            );
-        }).then(function (zipFile) {
-            return exec(mkTempCmd).then(function (tmpDir2) {
-                return exec("unzip -qq " + zipFile + " -d " + tmpDir2).then(function (res) {
-                   return path.resolve(tmpDir2);
+        return writeInTmpFile("action.zip", base64, "base64").then(function (zipFile) {
+            return exec("mktemp -d XXXXXXXX").then(function (tmpDir) {
+                return exec("unzip -qq " + zipFile + " -d " + tmpDir).then(function (res) {
+                   return path.resolve(tmpDir);
                 }).catch(function (error) {
                    return Promise.reject("There was an error uncompressing the action archive.");
                 });
@@ -157,6 +145,24 @@ function NodeActionRunner() {
                 });
             }
         );
+    }
+
+    // Helper function to write content to a file in a temporary directory
+    // and return the path of that file.
+    function writeInTmpFile(fileName, content, encoding) {
+        return exec("mktemp -d XXXXXXXX").then(function (tmpDir) {
+            var tmpFile = path.join(tmpDir, fileName);
+            return new Promise(
+                function (resolve, reject) {
+                    fs.writeFile(tmpFile, content, encoding, function (err) {
+                        if(err) {
+                            reject("There was an error writing the action file.");
+                        }
+                        resolve(path.resolve(tmpFile));
+                    });
+                }
+            );
+        });
     }
 }
 
