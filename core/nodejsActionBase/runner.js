@@ -24,6 +24,7 @@ var util = require('util');
 var child_process = require('child_process');
 var fs = require('fs');
 var path = require('path');
+var vm = require('vm');
 
 function NodeActionRunner() {
     // Use this ref inside closures etc.
@@ -72,8 +73,8 @@ function NodeActionRunner() {
         } else {
             // The code is a plain old JS file.
             try {
-                eval(message.code);
-                thisRunner.userScriptMain = eval(message.main);
+                vm.runInThisContext(message.code, 'action.js');
+                thisRunner.userScriptMain = vm.runInThisContext(message.main, 'invoke.js');
                 assertMainIsFunction();
                 // See comment above about 'true'; it has no specific meaning.
                 return Promise.resolve(true);
