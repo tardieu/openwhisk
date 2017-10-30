@@ -66,7 +66,8 @@ protected[actions] trait SequenceActions {
     action: WhiskAction,
     payload: Option[JsObject],
     waitForResponse: Option[FiniteDuration],
-    cause: Option[ActivationId])(implicit transid: TransactionId): Future[Either[ActivationId, WhiskActivation]]
+    cause: Option[ActivationId],
+    notify: Option[FullyQualifiedEntityName] = None)(implicit transid: TransactionId): Future[Either[ActivationId, WhiskActivation]]
 
   /**
    * Executes a sequence by invoking in a blocking fashion each of its components.
@@ -90,7 +91,8 @@ protected[actions] trait SequenceActions {
     waitForOutermostResponse: Option[FiniteDuration],
     cause: Option[ActivationId],
     topmost: Boolean,
-    atomicActionsCount: Int)(implicit transid: TransactionId): Future[(Either[ActivationId, WhiskActivation], Int)] = {
+    atomicActionsCount: Int,
+    notify: Option[FullyQualifiedEntityName] = None)(implicit transid: TransactionId): Future[(Either[ActivationId, WhiskActivation], Int)] = {
     require(action.exec.kind == Exec.SEQUENCE, "this method requires an action sequence")
 
     // create new activation id that corresponds to the sequence
@@ -118,6 +120,15 @@ protected[actions] trait SequenceActions {
         topmost,
         start,
         cause)
+    }
+
+    notify.map { notify =>
+      futureSeqResult.onSuccess {
+        case (Right(activation), _) =>
+          val params = JsObject("$result" -> activation.resultAsJson, "$sessionId" -> JsString(seqActivationId.toString))
+          WhiskAction.resolveActionAndMergeParameters(entityStore, notify)
+            .map { notify => invokeAction(user, notify, Some(params), None, None) }
+      }
     }
 
     if (topmost) { // need to deal with blocking and closing connection

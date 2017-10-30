@@ -66,6 +66,15 @@ protected[actions] trait PrimitiveActions {
   /** Database service to get activations. */
   protected val activationStore: ActivationStore
 
+  /** A method that knows how to invoke a single primitive action. */
+  protected[actions] def invokeAction(
+    user: Identity,
+    action: WhiskAction,
+    payload: Option[JsObject],
+    waitForResponse: Option[FiniteDuration],
+    cause: Option[ActivationId],
+    notify: Option[FullyQualifiedEntityName] = None)(implicit transid: TransactionId): Future[Either[ActivationId, WhiskActivation]]
+
   /**
    * Posts request to the loadbalancer. If the loadbalancer accepts the requests with an activation id,
    * then wait for the result of the activation if necessary.
@@ -96,7 +105,8 @@ protected[actions] trait PrimitiveActions {
     action: ExecutableWhiskAction,
     payload: Option[JsObject],
     waitForResponse: Option[FiniteDuration],
-    cause: Option[ActivationId])(implicit transid: TransactionId): Future[Either[ActivationId, WhiskActivation]] = {
+    cause: Option[ActivationId],
+    notify: Option[FullyQualifiedEntityName])(implicit transid: TransactionId): Future[Either[ActivationId, WhiskActivation]] = {
 
     // merge package parameters with action (action parameters supersede), then merge in payload
     val args = action.parameters merge payload
@@ -108,7 +118,7 @@ protected[actions] trait PrimitiveActions {
       activationIdFactory.make(), // activation id created here
       activationNamespace = user.namespace.toPath,
       activeAckTopicIndex,
-      waitForResponse.isDefined,
+      waitForResponse.isDefined || notify.isDefined,
       args,
       cause = cause)
 
@@ -125,19 +135,42 @@ protected[actions] trait PrimitiveActions {
       // successfully posted activation request to the message bus
       transid.finished(this, startLoadbalancer)
 
-      // is caller waiting for the result of the activation?
-      waitForResponse
-        .map { timeout =>
-          // yes, then wait for the activation response from the message bus
-          // (known as the active response or active ack)
-          waitForActivationResponse(user, message.activationId, timeout, activeAckResponse)
-            .andThen { case _ => transid.finished(this, startActivation) }
+      // should notify?
+      notify.map { notify =>
+        // yes, then wait for the activation response from the message bus
+        // (known as the active response or active ack)
+        val response = waitForActivationResponse(user, message.activationId, action.limits.timeout.duration + 1.minute, activeAckResponse)
+        response.onSuccess {
+          case Right(activation) =>
+            val params = JsObject("$result" -> activation.resultAsJson, "$sessionId" -> JsString(cause.getOrElse(message.activationId).toString))
+            WhiskAction.resolveActionAndMergeParameters(entityStore, notify)
+              .map { notify => invokeAction(user, notify, Some(params), None, None) }
         }
-        .getOrElse {
-          // no, return the activation id
-          transid.finished(this, startActivation)
-          Future.successful(Left(message.activationId))
-        }
+        // is caller waiting for the result of the activation?
+        waitForResponse
+          .map { timeout =>
+            // handle timeout
+            response.withAlternativeAfterTimeout(timeout, Future.successful(Left(message.activationId)))
+          }
+          .getOrElse {
+            // no, return the activation id
+            Future.successful(Left(message.activationId))
+          }
+      }
+      .getOrElse {
+        // is caller waiting for the result of the activation?
+        waitForResponse
+          .map { timeout =>
+            // yes, then wait for the activation response from the message bus
+            // (known as the active response or active ack)
+            waitForActivationResponse(user, message.activationId, timeout, activeAckResponse)
+          }
+          .getOrElse {
+            // no, return the activation id
+            Future.successful(Left(message.activationId))
+          }
+      }
+      .andThen { case _ => transid.finished(this, startActivation) }
     }
   }
 

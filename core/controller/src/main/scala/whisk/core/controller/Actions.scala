@@ -220,17 +220,21 @@ trait WhiskActionsApi extends WhiskCollectionAPI with PostActionActivation with 
     parameter(
       'blocking ? false,
       'result ? false,
-      'timeout.as[FiniteDuration] ? WhiskActionsApi.maxWaitForBlockingActivation) { (blocking, result, waitOverride) =>
+      'notify.as(Unmarshaller.strict(s => EntityPath(s))) ?,
+      'cause.as(Unmarshaller.strict(s => ActivationId(s))) ?,
+      'timeout.as[FiniteDuration] ? WhiskActionsApi.maxWaitForBlockingActivation) { (blocking, result, notifyPath, cause, waitOverride) =>
       entity(as[Option[JsObject]]) { payload =>
         getEntity(WhiskAction, entityStore, entityName.toDocId, Some {
           act: WhiskAction =>
             // resolve the action --- special case for sequences that may contain components with '_' as default package
             val action = act.resolve(user.namespace)
-            onComplete(entitleReferencedEntities(user, Privilege.ACTIVATE, Some(action.exec))) {
+            val notify = notifyPath.map { notify =>
+              (if (notify.defaultPackage) EntityPath.DEFAULT.addPath(notify) else notify).resolveNamespace(user.namespace).toFullyQualifiedEntityName }
+            onComplete(entitleReferencedEntities(user, Privilege.ACTIVATE, Some(action.exec), notify)) {
               case Success(_) =>
                 val actionWithMergedParams = env.map(action.inherit(_)) getOrElse action
                 val waitForResponse = if (blocking) Some(waitOverride) else None
-                onComplete(invokeAction(user, actionWithMergedParams, payload, waitForResponse, cause = None)) {
+                onComplete(invokeAction(user, actionWithMergedParams, payload, waitForResponse, cause, notify)) {
                   case Success(Left(activationId)) =>
                     // non-blocking invoke or blocking invoke which got queued instead
                     complete(Accepted, activationId.toJsObject)
@@ -376,13 +380,14 @@ trait WhiskActionsApi extends WhiskCollectionAPI with PostActionActivation with 
   }
 
   /** For a sequence action, gather referenced entities and authorize access. */
-  private def entitleReferencedEntities(user: Identity, right: Privilege, exec: Option[Exec])(
+  private def entitleReferencedEntities(user: Identity, right: Privilege, exec: Option[Exec], notify: Option[FullyQualifiedEntityName] = None)(
     implicit transid: TransactionId) = {
     exec match {
-      case Some(seq: SequenceExec) =>
+      case Some(SequenceExec(seq)) =>
         logging.info(this, "checking if sequence components are accessible")
-        entitlementProvider.check(user, right, referencedEntities(seq))
-      case _ => Future.successful(true)
+        entitlementProvider.check(user, right, referencedEntities(SequenceExec(notify.map { notify => seq :+ notify }.getOrElse(seq))))
+      case _ => notify.map { notify => entitlementProvider.check(user, right, referencedEntities(SequenceExec(Vector(notify)))) }
+        .getOrElse(Future.successful(true))
     }
   }
 
