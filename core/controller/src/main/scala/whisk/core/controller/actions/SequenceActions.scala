@@ -125,7 +125,7 @@ protected[actions] trait SequenceActions {
     notify.map { notify =>
       futureSeqResult.onSuccess {
         case (Right(activation), _) =>
-          val params = JsObject("$result" -> activation.resultAsJson, "$sessionId" -> JsString(seqActivationId.toString))
+          val params = JsObject("$result" -> activation.resultAsJson, "$sessionId" -> JsString(cause.getOrElse(seqActivationId).toString))
           WhiskAction.resolveActionAndMergeParameters(entityStore, notify)
             .map { notify => invokeAction(user, notify, Some(params), None, None) }
       }
