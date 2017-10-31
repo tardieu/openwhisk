@@ -229,7 +229,7 @@ protected[actions] trait SequenceActions {
       activationId = activationId,
       start = start,
       end = end,
-      cause = if (topmost) None else cause, // propagate the cause for inner sequences, but undefined for topmost
+      cause,
       response = accounting.previousResponse.getAndSet(null), // getAndSet(null) drops reference to the activation result
       logs = accounting.finalLogs,
       version = action.version,
