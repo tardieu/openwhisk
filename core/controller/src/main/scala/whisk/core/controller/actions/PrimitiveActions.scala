@@ -144,7 +144,7 @@ protected[actions] trait PrimitiveActions {
           case Right(activation) =>
             val params = JsObject("$result" -> activation.resultAsJson, "$sessionId" -> JsString(cause.getOrElse(message.activationId).toString))
             WhiskAction.resolveActionAndMergeParameters(entityStore, notify)
-              .map { notify => invokeAction(user, notify, Some(params), None, None) }
+              .map { notify => invokeAction(user, notify, Some(params), None, Some(cause.getOrElse(message.activationId))) }
         }
         // is caller waiting for the result of the activation?
         waitForResponse
