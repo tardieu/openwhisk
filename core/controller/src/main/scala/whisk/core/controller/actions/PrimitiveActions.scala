@@ -67,13 +67,13 @@ protected[actions] trait PrimitiveActions {
   protected val activationStore: ActivationStore
 
   /** A method that knows how to invoke a single primitive action. */
-  protected[actions] def invokeAction(
-    user: Identity,
-    action: WhiskAction,
-    payload: Option[JsObject],
-    waitForResponse: Option[FiniteDuration],
-    cause: Option[ActivationId],
-    notify: Option[FullyQualifiedEntityName] = None)(implicit transid: TransactionId): Future[Either[ActivationId, WhiskActivation]]
+  protected[actions] def invokeAction(user: Identity,
+                                      action: WhiskAction,
+                                      payload: Option[JsObject],
+                                      waitForResponse: Option[FiniteDuration],
+                                      cause: Option[ActivationId],
+                                      notify: Option[FullyQualifiedEntityName] = None)(
+    implicit transid: TransactionId): Future[Either[ActivationId, WhiskActivation]]
 
   /**
    * Posts request to the loadbalancer. If the loadbalancer accepts the requests with an activation id,
@@ -100,13 +100,13 @@ protected[actions] trait PrimitiveActions {
    *         or these custom failures:
    *            RequestEntityTooLarge if the message is too large to to post to the message bus
    */
-  protected[actions] def invokeSingleAction(
-    user: Identity,
-    action: ExecutableWhiskAction,
-    payload: Option[JsObject],
-    waitForResponse: Option[FiniteDuration],
-    cause: Option[ActivationId],
-    notify: Option[FullyQualifiedEntityName])(implicit transid: TransactionId): Future[Either[ActivationId, WhiskActivation]] = {
+  protected[actions] def invokeSingleAction(user: Identity,
+                                            action: ExecutableWhiskAction,
+                                            payload: Option[JsObject],
+                                            waitForResponse: Option[FiniteDuration],
+                                            cause: Option[ActivationId],
+                                            notify: Option[FullyQualifiedEntityName])(
+    implicit transid: TransactionId): Future[Either[ActivationId, WhiskActivation]] = {
 
     // merge package parameters with action (action parameters supersede), then merge in payload
     val args = action.parameters merge payload
@@ -136,41 +136,51 @@ protected[actions] trait PrimitiveActions {
       transid.finished(this, startLoadbalancer)
 
       // should notify?
-      notify.map { notify =>
-        // yes, then wait for the activation response from the message bus
-        // (known as the active response or active ack)
-        val response = waitForActivationResponse(user, message.activationId, action.limits.timeout.duration + 1.minute, activeAckResponse)
-        response.onSuccess {
-          case Right(activation) =>
-            val params = JsObject("$result" -> activation.resultAsJson, "$sessionId" -> JsString(cause.getOrElse(message.activationId).toString))
-            WhiskAction.resolveActionAndMergeParameters(entityStore, notify)
-              .map { notify => invokeAction(user, notify, Some(params), None, None) }
+      notify
+        .map { notify =>
+          // yes, then wait for the activation response from the message bus
+          // (known as the active response or active ack)
+          val response = waitForActivationResponse(
+            user,
+            message.activationId,
+            action.limits.timeout.duration + 1.minute,
+            activeAckResponse)
+          response.onSuccess {
+            case Right(activation) =>
+              val params = JsObject(
+                "$result" -> activation.resultAsJson,
+                "$sessionId" -> JsString(cause.getOrElse(message.activationId).toString))
+              WhiskAction
+                .resolveActionAndMergeParameters(entityStore, notify)
+                .map { notify =>
+                  invokeAction(user, notify, Some(params), None, None)
+                }
+          }
+          // is caller waiting for the result of the activation?
+          waitForResponse
+            .map { timeout =>
+              // handle timeout
+              response.withAlternativeAfterTimeout(timeout, Future.successful(Left(message.activationId)))
+            }
+            .getOrElse {
+              // no, return the activation id
+              Future.successful(Left(message.activationId))
+            }
         }
-        // is caller waiting for the result of the activation?
-        waitForResponse
-          .map { timeout =>
-            // handle timeout
-            response.withAlternativeAfterTimeout(timeout, Future.successful(Left(message.activationId)))
-          }
-          .getOrElse {
-            // no, return the activation id
-            Future.successful(Left(message.activationId))
-          }
-      }
-      .getOrElse {
-        // is caller waiting for the result of the activation?
-        waitForResponse
-          .map { timeout =>
-            // yes, then wait for the activation response from the message bus
-            // (known as the active response or active ack)
-            waitForActivationResponse(user, message.activationId, timeout, activeAckResponse)
-          }
-          .getOrElse {
-            // no, return the activation id
-            Future.successful(Left(message.activationId))
-          }
-      }
-      .andThen { case _ => transid.finished(this, startActivation) }
+        .getOrElse {
+          // is caller waiting for the result of the activation?
+          waitForResponse
+            .map { timeout =>
+              // yes, then wait for the activation response from the message bus
+              // (known as the active response or active ack)
+              waitForActivationResponse(user, message.activationId, timeout, activeAckResponse)
+            }
+            .getOrElse {
+              // no, return the activation id
+              Future.successful(Left(message.activationId))
+            }
+        }
+        .andThen { case _ => transid.finished(this, startActivation) }
     }
   }
 

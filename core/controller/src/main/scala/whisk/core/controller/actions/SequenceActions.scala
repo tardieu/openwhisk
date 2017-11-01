@@ -61,13 +61,13 @@ protected[actions] trait SequenceActions {
   protected val activationStore: ActivationStore
 
   /** A method that knows how to invoke a single primitive action. */
-  protected[actions] def invokeAction(
-    user: Identity,
-    action: WhiskAction,
-    payload: Option[JsObject],
-    waitForResponse: Option[FiniteDuration],
-    cause: Option[ActivationId],
-    notify: Option[FullyQualifiedEntityName] = None)(implicit transid: TransactionId): Future[Either[ActivationId, WhiskActivation]]
+  protected[actions] def invokeAction(user: Identity,
+                                      action: WhiskAction,
+                                      payload: Option[JsObject],
+                                      waitForResponse: Option[FiniteDuration],
+                                      cause: Option[ActivationId],
+                                      notify: Option[FullyQualifiedEntityName] = None)(
+    implicit transid: TransactionId): Future[Either[ActivationId, WhiskActivation]]
 
   /**
    * Executes a sequence by invoking in a blocking fashion each of its components.
@@ -83,16 +83,16 @@ protected[actions] trait SequenceActions {
    * @param transid a transaction id for logging
    * @return a future of type (ActivationId, Some(WhiskActivation), atomicActionsCount) if blocking; else (ActivationId, None, 0)
    */
-  protected[actions] def invokeSequence(
-    user: Identity,
-    action: WhiskAction,
-    components: Vector[FullyQualifiedEntityName],
-    payload: Option[JsObject],
-    waitForOutermostResponse: Option[FiniteDuration],
-    cause: Option[ActivationId],
-    topmost: Boolean,
-    atomicActionsCount: Int,
-    notify: Option[FullyQualifiedEntityName] = None)(implicit transid: TransactionId): Future[(Either[ActivationId, WhiskActivation], Int)] = {
+  protected[actions] def invokeSequence(user: Identity,
+                                        action: WhiskAction,
+                                        components: Vector[FullyQualifiedEntityName],
+                                        payload: Option[JsObject],
+                                        waitForOutermostResponse: Option[FiniteDuration],
+                                        cause: Option[ActivationId],
+                                        topmost: Boolean,
+                                        atomicActionsCount: Int,
+                                        notify: Option[FullyQualifiedEntityName] = None)(
+    implicit transid: TransactionId): Future[(Either[ActivationId, WhiskActivation], Int)] = {
     require(action.exec.kind == Exec.SEQUENCE, "this method requires an action sequence")
 
     // create new activation id that corresponds to the sequence
@@ -125,9 +125,14 @@ protected[actions] trait SequenceActions {
     notify.map { notify =>
       futureSeqResult.onSuccess {
         case (Right(activation), _) =>
-          val params = JsObject("$result" -> activation.resultAsJson, "$sessionId" -> JsString(cause.getOrElse(seqActivationId).toString))
-          WhiskAction.resolveActionAndMergeParameters(entityStore, notify)
-            .map { notify => invokeAction(user, notify, Some(params), None, None) }
+          val params = JsObject(
+            "$result" -> activation.resultAsJson,
+            "$sessionId" -> JsString(cause.getOrElse(seqActivationId).toString))
+          WhiskAction
+            .resolveActionAndMergeParameters(entityStore, notify)
+            .map { notify =>
+              invokeAction(user, notify, Some(params), None, None)
+            }
       }
     }
 

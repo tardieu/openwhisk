@@ -222,56 +222,60 @@ trait WhiskActionsApi extends WhiskCollectionAPI with PostActionActivation with 
       'result ? false,
       'notify.as(Unmarshaller.strict(s => EntityPath(s))) ?,
       'cause.as(Unmarshaller.strict(s => ActivationId(s))) ?,
-      'timeout.as[FiniteDuration] ? WhiskActionsApi.maxWaitForBlockingActivation) { (blocking, result, notifyPath, cause, waitOverride) =>
-      entity(as[Option[JsObject]]) { payload =>
-        getEntity(WhiskAction, entityStore, entityName.toDocId, Some {
-          act: WhiskAction =>
-            // resolve the action --- special case for sequences that may contain components with '_' as default package
-            val action = act.resolve(user.namespace)
-            val notify = notifyPath.map { notify =>
-              (if (notify.defaultPackage) EntityPath.DEFAULT.addPath(notify) else notify).resolveNamespace(user.namespace).toFullyQualifiedEntityName }
-            onComplete(entitleReferencedEntities(user, Privilege.ACTIVATE, Some(action.exec), notify)) {
-              case Success(_) =>
-                val actionWithMergedParams = env.map(action.inherit(_)) getOrElse action
-                val waitForResponse = if (blocking) Some(waitOverride) else None
-                onComplete(invokeAction(user, actionWithMergedParams, payload, waitForResponse, cause, notify)) {
-                  case Success(Left(activationId)) =>
-                    // non-blocking invoke or blocking invoke which got queued instead
-                    complete(Accepted, activationId.toJsObject)
-                  case Success(Right(activation)) =>
-                    val response = if (result) activation.resultAsJson else activation.toExtendedJson
+      'timeout.as[FiniteDuration] ? WhiskActionsApi.maxWaitForBlockingActivation) {
+      (blocking, result, notifyPath, cause, waitOverride) =>
+        entity(as[Option[JsObject]]) { payload =>
+          getEntity(WhiskAction, entityStore, entityName.toDocId, Some {
+            act: WhiskAction =>
+              // resolve the action --- special case for sequences that may contain components with '_' as default package
+              val action = act.resolve(user.namespace)
+              val notify = notifyPath.map { notify =>
+                (if (notify.defaultPackage) EntityPath.DEFAULT.addPath(notify) else notify)
+                  .resolveNamespace(user.namespace)
+                  .toFullyQualifiedEntityName
+              }
+              onComplete(entitleReferencedEntities(user, Privilege.ACTIVATE, Some(action.exec), notify)) {
+                case Success(_) =>
+                  val actionWithMergedParams = env.map(action.inherit(_)) getOrElse action
+                  val waitForResponse = if (blocking) Some(waitOverride) else None
+                  onComplete(invokeAction(user, actionWithMergedParams, payload, waitForResponse, cause, notify)) {
+                    case Success(Left(activationId)) =>
+                      // non-blocking invoke or blocking invoke which got queued instead
+                      complete(Accepted, activationId.toJsObject)
+                    case Success(Right(activation)) =>
+                      val response = if (result) activation.resultAsJson else activation.toExtendedJson
 
-                    if (activation.response.isSuccess) {
-                      complete(OK, response)
-                    } else if (activation.response.isApplicationError) {
-                      // actions that result is ApplicationError status are considered a 'success'
-                      // and will have an 'error' property in the result - the HTTP status is OK
-                      // and clients must check the response status if it exists
-                      // NOTE: response status will not exist in the JSON object if ?result == true
-                      // and instead clients must check if 'error' is in the JSON
-                      // PRESERVING OLD BEHAVIOR and will address defect in separate change
-                      complete(BadGateway, response)
-                    } else if (activation.response.isContainerError) {
-                      complete(BadGateway, response)
-                    } else {
-                      complete(InternalServerError, response)
-                    }
-                  case Failure(t: RecordTooLargeException) =>
-                    logging.info(this, s"[POST] action payload was too large")
-                    terminate(RequestEntityTooLarge)
-                  case Failure(RejectRequest(code, message)) =>
-                    logging.info(this, s"[POST] action rejected with code $code: $message")
-                    terminate(code, message)
-                  case Failure(t: Throwable) =>
-                    logging.error(this, s"[POST] action activation failed: ${t.getMessage}")
-                    terminate(InternalServerError)
-                }
+                      if (activation.response.isSuccess) {
+                        complete(OK, response)
+                      } else if (activation.response.isApplicationError) {
+                        // actions that result is ApplicationError status are considered a 'success'
+                        // and will have an 'error' property in the result - the HTTP status is OK
+                        // and clients must check the response status if it exists
+                        // NOTE: response status will not exist in the JSON object if ?result == true
+                        // and instead clients must check if 'error' is in the JSON
+                        // PRESERVING OLD BEHAVIOR and will address defect in separate change
+                        complete(BadGateway, response)
+                      } else if (activation.response.isContainerError) {
+                        complete(BadGateway, response)
+                      } else {
+                        complete(InternalServerError, response)
+                      }
+                    case Failure(t: RecordTooLargeException) =>
+                      logging.info(this, s"[POST] action payload was too large")
+                      terminate(RequestEntityTooLarge)
+                    case Failure(RejectRequest(code, message)) =>
+                      logging.info(this, s"[POST] action rejected with code $code: $message")
+                      terminate(code, message)
+                    case Failure(t: Throwable) =>
+                      logging.error(this, s"[POST] action activation failed: ${t.getMessage}")
+                      terminate(InternalServerError)
+                  }
 
-              case Failure(f) =>
-                super.handleEntitlementFailure(f)
-            }
-        })
-      }
+                case Failure(f) =>
+                  super.handleEntitlementFailure(f)
+              }
+          })
+        }
     }
   }
 
@@ -380,14 +384,29 @@ trait WhiskActionsApi extends WhiskCollectionAPI with PostActionActivation with 
   }
 
   /** For a sequence action, gather referenced entities and authorize access. */
-  private def entitleReferencedEntities(user: Identity, right: Privilege, exec: Option[Exec], notify: Option[FullyQualifiedEntityName] = None)(
-    implicit transid: TransactionId) = {
+  private def entitleReferencedEntities(
+    user: Identity,
+    right: Privilege,
+    exec: Option[Exec],
+    notify: Option[FullyQualifiedEntityName] = None)(implicit transid: TransactionId) = {
     exec match {
       case Some(SequenceExec(seq)) =>
         logging.info(this, "checking if sequence components are accessible")
-        entitlementProvider.check(user, right, referencedEntities(SequenceExec(notify.map { notify => seq :+ notify }.getOrElse(seq))))
-      case _ => notify.map { notify => entitlementProvider.check(user, right, referencedEntities(SequenceExec(Vector(notify)))) }
-        .getOrElse(Future.successful(true))
+        entitlementProvider.check(
+          user,
+          right,
+          referencedEntities(
+            SequenceExec(notify
+              .map { notify =>
+                seq :+ notify
+              }
+              .getOrElse(seq))))
+      case _ =>
+        notify
+          .map { notify =>
+            entitlementProvider.check(user, right, referencedEntities(SequenceExec(Vector(notify))))
+          }
+          .getOrElse(Future.successful(true))
     }
   }
 
