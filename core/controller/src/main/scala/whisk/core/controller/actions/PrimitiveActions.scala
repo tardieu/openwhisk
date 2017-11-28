@@ -17,12 +17,18 @@
 
 package whisk.core.controller.actions
 
+import java.time.Clock
+import java.time.Instant
+
 import scala.collection.mutable.Buffer
 import scala.concurrent.ExecutionContext
 import scala.concurrent.Future
 import scala.concurrent.Promise
 import scala.concurrent.duration._
+import scala.language.postfixOps
 import scala.util.Failure
+import scala.util.Success
+import scala.util.Try
 
 import akka.actor.Actor
 import akka.actor.ActorRef
@@ -38,6 +44,7 @@ import whisk.core.connector.ActivationMessage
 import whisk.core.controller.WhiskServices
 import whisk.core.database.NoDocumentException
 import whisk.core.entity._
+import whisk.core.entity.size.SizeInt
 import whisk.core.entity.types.ActivationStore
 import whisk.core.entity.types.EntityStore
 import whisk.utils.ExecutionContextFactory.FutureExtensions
@@ -66,6 +73,31 @@ protected[actions] trait PrimitiveActions {
   /** Database service to get activations. */
   protected val activationStore: ActivationStore
 
+  /** A method that knows how to invoke a sequence of actions. */
+  protected[actions] def invokeSequence(
+    user: Identity,
+    action: WhiskAction,
+    components: Vector[FullyQualifiedEntityName],
+    payload: Option[JsObject],
+    waitForOutermostResponse: Option[FiniteDuration],
+    cause: Option[ActivationId],
+    topmost: Boolean,
+    atomicActionsCount: Int)(implicit transid: TransactionId): Future[(Either[ActivationId, WhiskActivation], Int)]
+
+  protected[actions] def invokeSingleAction(
+    user: Identity,
+    action: ExecutableWhiskAction,
+    payload: Option[JsObject],
+    waitForResponse: Option[FiniteDuration],
+    cause: Option[ActivationId])(implicit transid: TransactionId): Future[Either[ActivationId, WhiskActivation]] = {
+
+    if (action.annotations.get("conductor").isDefined) {
+      invokeConductor(user, action, payload, waitForResponse, cause)
+    } else {
+      invokeSimpleAction(user, action, payload, waitForResponse, cause)
+    }
+  }
+
   /**
    * Posts request to the loadbalancer. If the loadbalancer accepts the requests with an activation id,
    * then wait for the result of the activation if necessary.
@@ -91,7 +123,7 @@ protected[actions] trait PrimitiveActions {
    *         or these custom failures:
    *            RequestEntityTooLarge if the message is too large to to post to the message bus
    */
-  protected[actions] def invokeSingleAction(
+  private def invokeSimpleAction(
     user: Identity,
     action: ExecutableWhiskAction,
     payload: Option[JsObject],
@@ -138,6 +170,240 @@ protected[actions] trait PrimitiveActions {
           transid.finished(this, startActivation)
           Future.successful(Left(message.activationId))
         }
+    }
+  }
+
+  private case class Session(activationId: ActivationId,
+                             start: Instant,
+                             action: ExecutableWhiskAction,
+                             cause: Option[ActivationId],
+                             var duration: Long,
+                             var maxMemory: Int,
+                             logs: Buffer[ActivationId],
+                             callee: Option[Session],
+                             result: Option[Promise[Either[ActivationId, WhiskActivation]]])
+
+  private def invokeConductor(
+    user: Identity,
+    action: ExecutableWhiskAction,
+    payload: Option[JsObject],
+    waitForResponse: Option[FiniteDuration],
+    cause: Option[ActivationId],
+    callee: Option[Session] = None, // callee and resume cannot be both set
+    resume: Option[Session] = None)(implicit transid: TransactionId): Future[Either[ActivationId, WhiskActivation]] = {
+
+    // start session if None specified
+    val session = resume.getOrElse {
+      Session(
+        activationId = activationIdFactory.make(),
+        start = Instant.now(Clock.systemUTC()),
+        action,
+        cause,
+        duration = 0,
+        maxMemory = action.limits.memory.megabytes,
+        logs = Buffer.empty,
+        callee,
+        result = waitForResponse.map { _ =>
+          Promise[Either[ActivationId, WhiskActivation]]()
+        }) // placeholder for result if blocking invoke
+    }
+
+    // add $session and $resume to params
+    val fields = payload match {
+      case Some(JsObject(fields)) => fields
+      case _                      => Map[String, JsValue]()
+    }
+    val params = JsObject(
+      fields + ("$session" -> JsString(session.activationId.toString)) + ("$resume" -> JsBoolean(resume.isDefined)))
+
+    // invoke conductor action
+    val response =
+      invokeSimpleAction(
+        user,
+        action,
+        Some(params),
+        Some(action.limits.timeout.duration + 1.minute), // wait for result
+        Some(session.activationId)) // cause is session id
+
+    response.onComplete {
+      case Failure(t) =>
+        // invocation failure
+        val response = ActivationResponse.whiskError(s"conductor activation failed: ${t.getMessage}")
+        completeAppActivation(user, session, response)
+      case Success(Left(activationId)) =>
+        // invocation timeout
+        session.logs += activationId
+        val response = ActivationResponse.whiskError(s"conductor activation timedout for $activationId")
+        completeAppActivation(user, session, response)
+      case Success(Right(activation)) =>
+        session.logs += activation.activationId
+        session.duration += activation.duration.getOrElse(activation.end.toEpochMilli - activation.start.toEpochMilli)
+
+        // successful invocation
+        val result = activation.resultAsJson
+
+        // extract params from result
+        val params = result.getFields("$params").headOption.map { p =>
+          Try(p.asJsObject).getOrElse(JsObject("value" -> p))
+        }
+
+        // extract next action from result
+        result.getFields("$next").headOption.map { n =>
+          Try(n.convertTo[EntityPath])
+        } match {
+          case Some(Failure(t)) =>
+            // parsing failure
+            val response = ActivationResponse.whiskError(s"invalid next action: ${t.getMessage}")
+            completeAppActivation(user, session, response)
+          case None =>
+            // no next action, end app execution, return to callee
+            val response = ActivationResponse(activation.response.statusCode, params)
+            completeAppActivation(user, session, response)
+          case Some(Success(next)) =>
+            // resolve and invoke next action
+            val fqn = (if (next.defaultPackage) EntityPath.DEFAULT.addPath(next) else next)
+              .resolveNamespace(user.namespace)
+              .toFullyQualifiedEntityName
+            WhiskAction.resolveActionAndMergeParameters(entityStore, fqn).onComplete {
+              case Failure(t) =>
+                // resolution failure
+                val response = ActivationResponse.whiskError(s"failed to resolve next action: ${t.getMessage}")
+                completeAppActivation(user, session, response)
+              case Success(next) =>
+                // successful resolution
+                val exec = next.toExecutableWhiskAction
+                if (next.annotations.get("conductor").isDefined && exec.isDefined) {
+                  // invoke nested app
+                  invokeConductor(user, exec.head, params, None, Some(session.activationId), Some(session))
+                } else {
+                  exec
+                    .map { exec =>
+                      invokeSimpleAction(
+                        user,
+                        exec,
+                        params,
+                        Some(next.limits.timeout.duration + 1.minute),
+                        Some(session.activationId))
+                    }
+                    .getOrElse {
+                      val SequenceExec(components) = next.exec
+                      invokeSequence(user, next, components, params, None, Some(session.activationId), false, 0)
+                        .map(r => r._1)
+                    }
+                    .onComplete {
+                      case Failure(t) =>
+                        val response = ActivationResponse.whiskError(s"activation failed: ${t.getMessage}")
+                        completeAppActivation(user, session, response)
+                      case Success(Left(activationId)) =>
+                        session.logs += activationId
+                        val response = ActivationResponse.whiskError(s"activation timedout for $activationId")
+                        completeAppActivation(user, session, response)
+                      case Success(Right(activation)) =>
+                        session.logs += activation.activationId
+                        session.duration += activation.duration.getOrElse(
+                          activation.end.toEpochMilli - activation.start.toEpochMilli)
+                        activation.annotations.get("limits") map { limitsAnnotation =>
+                          limitsAnnotation.asJsObject.getFields("memory") match {
+                            case Seq(JsNumber(memory)) =>
+                              session.maxMemory = Math.max(session.maxMemory, memory.toInt)
+                          }
+                        }
+
+                        // resume on activation result
+                        invokeConductor(
+                          user,
+                          action,
+                          Some(activation.resultAsJson),
+                          None,
+                          Some(session.activationId),
+                          None, // resuming
+                          Some(session))
+                    }
+                }
+            }
+        }
+    }
+
+    // is caller waiting for the result of the activation?
+    waitForResponse
+      .map { timeout =>
+        // handle timeout
+        session.result.head.future
+          .withAlternativeAfterTimeout(timeout, Future.successful(Left(session.activationId)))
+      }
+      .getOrElse {
+        // no, return the session id
+        Future.successful(Left(session.activationId))
+      }
+  }
+
+  /**
+   * Creates an activation for an app and writes it back to the datastore.
+   * Completes the associated promise if any.
+   * Resumes callee if any.
+   */
+  private def completeAppActivation(user: Identity, session: Session, response: ActivationResponse)(
+    implicit transid: TransactionId): Unit = {
+    // compute max memory
+    val sequenceLimits = Parameters(
+      "limits",
+      ActionLimits(session.action.limits.timeout, MemoryLimit(session.maxMemory MB), session.action.limits.logs).toJson)
+
+    // set causedBy if not topmost
+    val causedBy = if (session.cause.isDefined) {
+      Parameters("causedBy", JsString("sequence"))
+    } else {
+      Parameters()
+    }
+
+    val end = Instant.now(Clock.systemUTC())
+
+    // create the whisk activation
+    val activation = WhiskActivation(
+      namespace = user.namespace.toPath,
+      name = session.action.name,
+      user.subject,
+      activationId = session.activationId,
+      start = session.start,
+      end = end,
+      cause = session.cause,
+      response = response,
+      logs = ActivationLogs(session.logs.map(_.asString).toVector),
+      version = session.action.version,
+      publish = false,
+      annotations = Parameters("topmost", JsBoolean(!session.cause.isDefined)) ++
+        Parameters("path", session.action.fullyQualifiedName(false).toString) ++
+        Parameters("kind", "sequence") ++
+        Parameters("conductor", JsBoolean(true)) ++
+        causedBy ++
+        sequenceLimits,
+      duration = Some(session.duration))
+
+    // complete the promise if any
+    session.result.map { _.success(Right(activation)) }
+
+    logging.info(this, s"recording activation '${activation.activationId}'")
+    WhiskActivation.put(activationStore, activation)(transid, notifier = None) onComplete {
+      case Success(id) => logging.info(this, s"recorded activation")
+      case Failure(t) =>
+        logging.error(
+          this,
+          s"failed to record activation ${activation.activationId} with error ${t.getLocalizedMessage}")
+    }
+
+    // resume callee if any
+    session.callee.map { callee =>
+      callee.logs += session.activationId
+      callee.duration += session.duration
+      callee.maxMemory = Math.max(callee.maxMemory, session.maxMemory)
+      invokeConductor(
+        user,
+        callee.action,
+        Some(activation.resultAsJson),
+        None,
+        Some(callee.activationId),
+        None, // resuming
+        Some(callee))
     }
   }
 
