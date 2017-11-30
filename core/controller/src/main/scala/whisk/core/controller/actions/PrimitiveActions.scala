@@ -181,7 +181,7 @@ protected[actions] trait PrimitiveActions {
                              var maxMemory: Int,
                              var state: Option[JsObject],
                              logs: Buffer[ActivationId],
-                             callee: Option[Session],
+                             caller: Option[Session],
                              result: Option[Promise[Either[ActivationId, WhiskActivation]]])
 
   private def invokeConductor(
@@ -190,11 +190,11 @@ protected[actions] trait PrimitiveActions {
     payload: Option[JsObject],
     waitForResponse: Option[FiniteDuration],
     cause: Option[ActivationId],
-    callee: Option[Session] = None, // callee and resume cannot be both set
-    resume: Option[Session] = None)(implicit transid: TransactionId): Future[Either[ActivationId, WhiskActivation]] = {
+    caller: Option[Session] = None, // caller and resuming cannot be both set
+    resuming: Option[Session] = None)(implicit transid: TransactionId): Future[Either[ActivationId, WhiskActivation]] = {
 
-    // start session if None specified
-    val session = resume.getOrElse {
+    // start session if not resuming one
+    val session = resuming.getOrElse {
       Session(
         activationId = activationIdFactory.make(),
         start = Instant.now(Clock.systemUTC()),
@@ -204,27 +204,25 @@ protected[actions] trait PrimitiveActions {
         maxMemory = action.limits.memory.megabytes,
         state = None,
         logs = Buffer.empty,
-        callee,
+        caller,
         result = waitForResponse.map { _ =>
           Promise[Either[ActivationId, WhiskActivation]]()
         }) // placeholder for result if blocking invoke
     }
 
-    // add $session and $invoke to params
-    val fields = payload.getOrElse(JsObject()).fields + ("$session" -> JsString(session.activationId.toString))
-    val params = JsObject(
-      session.state
-        .map { state =>
-          fields + ("$invoke" -> state)
-        }
-        .getOrElse(fields))
+    // override $invoke params if session has state
+    val params = session.state
+      .map { state =>
+        Some(JsObject(payload.getOrElse(JsObject()).fields + ("$invoke" -> state)))
+      }
+      .getOrElse(payload)
 
     // invoke conductor action
     val response =
       invokeSimpleAction(
         user,
         action,
-        Some(params),
+        params,
         Some(action.limits.timeout.duration + 1.minute), // wait for result
         Some(session.activationId)) // cause is session id
 
@@ -239,10 +237,10 @@ protected[actions] trait PrimitiveActions {
         val response = ActivationResponse.whiskError(s"conductor activation timedout for $activationId")
         completeAppActivation(user, session, response)
       case Success(Right(activation)) =>
+        // successful invocation
         session.logs += activation.activationId
         session.duration += activation.duration.getOrElse(activation.end.toEpochMilli - activation.start.toEpochMilli)
 
-        // successful invocation
         val result = activation.resultAsJson
 
         // extract params from result
@@ -250,6 +248,7 @@ protected[actions] trait PrimitiveActions {
           Try(p.asJsObject).getOrElse(JsObject("value" -> p))
         }
 
+        // update session state
         session.state = result.getFields("$invoke").headOption.flatMap { p =>
           Try(Some(p.asJsObject)).getOrElse(None)
         }
@@ -263,7 +262,7 @@ protected[actions] trait PrimitiveActions {
             val response = ActivationResponse.whiskError(s"invalid next action: ${t.getMessage}")
             completeAppActivation(user, session, response)
           case None =>
-            // no next action, end app execution, return to callee
+            // no next action, end app execution, return to caller
             val response = ActivationResponse(activation.response.statusCode, params)
             completeAppActivation(user, session, response)
           case Some(Success(next)) =>
@@ -347,7 +346,7 @@ protected[actions] trait PrimitiveActions {
   /**
    * Creates an activation for an app and writes it back to the datastore.
    * Completes the associated promise if any.
-   * Resumes callee if any.
+   * Resumes caller if any.
    */
   private def completeAppActivation(user: Identity, session: Session, response: ActivationResponse)(
     implicit transid: TransactionId): Unit = {
@@ -398,19 +397,19 @@ protected[actions] trait PrimitiveActions {
           s"failed to record activation ${activation.activationId} with error ${t.getLocalizedMessage}")
     }
 
-    // resume callee if any
-    session.callee.map { callee =>
-      callee.logs += session.activationId
-      callee.duration += session.duration
-      callee.maxMemory = Math.max(callee.maxMemory, session.maxMemory)
+    // resume caller if any
+    session.caller.map { caller =>
+      caller.logs += session.activationId
+      caller.duration += session.duration
+      caller.maxMemory = Math.max(caller.maxMemory, session.maxMemory)
       invokeConductor(
         user,
-        callee.action,
+        caller.action,
         Some(activation.resultAsJson),
         None,
-        Some(callee.activationId),
+        Some(caller.activationId),
         None, // resuming
-        Some(callee))
+        Some(caller))
     }
   }
 
