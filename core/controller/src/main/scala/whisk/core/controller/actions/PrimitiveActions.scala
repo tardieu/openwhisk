@@ -210,10 +210,10 @@ protected[actions] trait PrimitiveActions {
         }) // placeholder for result if blocking invoke
     }
 
-    // override $invoke params if session has state
+    // add state to payload
     val params = session.state
       .map { state =>
-        Some(JsObject(payload.getOrElse(JsObject()).fields + ("$invoke" -> state)))
+        Some(JsObject(payload.getOrElse(JsObject()).fields ++ state.fields))
       }
       .getOrElse(payload)
 
@@ -244,17 +244,17 @@ protected[actions] trait PrimitiveActions {
         val result = activation.resultAsJson
 
         // extract params from result
-        val params = result.getFields("$params").headOption.map { p =>
+        val params = result.getFields("params").headOption.map { p =>
           Try(p.asJsObject).getOrElse(JsObject("value" -> p))
         }
 
         // update session state
-        session.state = result.getFields("$invoke").headOption.flatMap { p =>
+        session.state = result.getFields("state").headOption.flatMap { p =>
           Try(Some(p.asJsObject)).getOrElse(None)
         }
 
         // extract next action from result
-        result.getFields("$next").headOption.map { n =>
+        result.getFields("action").headOption.map { n =>
           Try(n.convertTo[EntityPath])
         } match {
           case Some(Failure(t)) =>
