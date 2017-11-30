@@ -263,7 +263,7 @@ protected[actions] trait PrimitiveActions {
             completeAppActivation(user, session, response)
           case None =>
             // no next action, end app execution, return to caller
-            val response = ActivationResponse(activation.response.statusCode, params)
+            val response = ActivationResponse(activation.response.statusCode, Some(params.getOrElse(result)))
             completeAppActivation(user, session, response)
           case Some(Success(next)) =>
             // resolve and invoke next action
