@@ -179,6 +179,7 @@ protected[actions] trait PrimitiveActions {
                              cause: Option[ActivationId],
                              var duration: Long,
                              var maxMemory: Int,
+                             var state: Option[JsObject],
                              logs: Buffer[ActivationId],
                              callee: Option[Session],
                              result: Option[Promise[Either[ActivationId, WhiskActivation]]])
@@ -201,6 +202,7 @@ protected[actions] trait PrimitiveActions {
         cause,
         duration = 0,
         maxMemory = action.limits.memory.megabytes,
+        state = None,
         logs = Buffer.empty,
         callee,
         result = waitForResponse.map { _ =>
@@ -208,13 +210,14 @@ protected[actions] trait PrimitiveActions {
         }) // placeholder for result if blocking invoke
     }
 
-    // add $session and $resume to params
-    val fields = payload match {
-      case Some(JsObject(fields)) => fields
-      case _                      => Map[String, JsValue]()
-    }
+    // add $session and $invoke to params
+    val fields = payload.getOrElse(JsObject()).fields + ("$session" -> JsString(session.activationId.toString))
     val params = JsObject(
-      fields + ("$session" -> JsString(session.activationId.toString)) + ("$resume" -> JsBoolean(resume.isDefined)))
+      session.state
+        .map { state =>
+          fields + ("$invoke" -> state)
+        }
+        .getOrElse(fields))
 
     // invoke conductor action
     val response =
@@ -245,6 +248,10 @@ protected[actions] trait PrimitiveActions {
         // extract params from result
         val params = result.getFields("$params").headOption.map { p =>
           Try(p.asJsObject).getOrElse(JsObject("value" -> p))
+        }
+
+        session.state = result.getFields("$invoke").headOption.flatMap { p =>
+          Try(Some(p.asJsObject)).getOrElse(None)
         }
 
         // extract next action from result
