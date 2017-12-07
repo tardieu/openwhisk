@@ -259,7 +259,7 @@ protected[actions] trait PrimitiveActions {
         } match {
           case Some(Failure(t)) =>
             // parsing failure
-            val response = ActivationResponse.whiskError(s"invalid next action: ${t.getMessage}")
+            val response = ActivationResponse.applicationError(s"failed to parse next action: ${t.getMessage}")
             completeAppActivation(user, session, response)
           case None =>
             // no next action, end app execution, return to caller
@@ -273,7 +273,7 @@ protected[actions] trait PrimitiveActions {
             WhiskActionMetaData.resolveActionAndMergeParameters(entityStore, fqn).onComplete {
               case Failure(t) =>
                 // resolution failure
-                val response = ActivationResponse.whiskError(s"failed to resolve next action: ${t.getMessage}")
+                val response = ActivationResponse.applicationError(s"failed to resolve next action: ${next} ${t.getMessage}")
                 completeAppActivation(user, session, response)
               case Success(next) =>
                 // successful resolution
