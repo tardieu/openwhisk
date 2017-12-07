@@ -76,7 +76,7 @@ protected[actions] trait PrimitiveActions {
   /** A method that knows how to invoke a sequence of actions. */
   protected[actions] def invokeSequence(
     user: Identity,
-    action: WhiskAction,
+    action: WhiskActionMetaData,
     components: Vector[FullyQualifiedEntityName],
     payload: Option[JsObject],
     waitForOutermostResponse: Option[FiniteDuration],
@@ -86,7 +86,7 @@ protected[actions] trait PrimitiveActions {
 
   protected[actions] def invokeSingleAction(
     user: Identity,
-    action: ExecutableWhiskAction,
+    action: ExecutableWhiskActionMetaData,
     payload: Option[JsObject],
     waitForResponse: Option[FiniteDuration],
     cause: Option[ActivationId])(implicit transid: TransactionId): Future[Either[ActivationId, WhiskActivation]] = {
@@ -125,7 +125,7 @@ protected[actions] trait PrimitiveActions {
    */
   private def invokeSimpleAction(
     user: Identity,
-    action: ExecutableWhiskAction,
+    action: ExecutableWhiskActionMetaData,
     payload: Option[JsObject],
     waitForResponse: Option[FiniteDuration],
     cause: Option[ActivationId])(implicit transid: TransactionId): Future[Either[ActivationId, WhiskActivation]] = {
@@ -175,7 +175,7 @@ protected[actions] trait PrimitiveActions {
 
   private case class Session(activationId: ActivationId,
                              start: Instant,
-                             action: ExecutableWhiskAction,
+                             action: ExecutableWhiskActionMetaData,
                              cause: Option[ActivationId],
                              var duration: Long,
                              var maxMemory: Int,
@@ -186,7 +186,7 @@ protected[actions] trait PrimitiveActions {
 
   private def invokeConductor(
     user: Identity,
-    action: ExecutableWhiskAction,
+    action: ExecutableWhiskActionMetaData,
     payload: Option[JsObject],
     waitForResponse: Option[FiniteDuration],
     cause: Option[ActivationId],
@@ -270,7 +270,7 @@ protected[actions] trait PrimitiveActions {
             val fqn = (if (next.defaultPackage) EntityPath.DEFAULT.addPath(next) else next)
               .resolveNamespace(user.namespace)
               .toFullyQualifiedEntityName
-            WhiskAction.resolveActionAndMergeParameters(entityStore, fqn).onComplete {
+            WhiskActionMetaData.resolveActionAndMergeParameters(entityStore, fqn).onComplete {
               case Failure(t) =>
                 // resolution failure
                 val response = ActivationResponse.whiskError(s"failed to resolve next action: ${t.getMessage}")
@@ -292,7 +292,7 @@ protected[actions] trait PrimitiveActions {
                         Some(session.activationId))
                     }
                     .getOrElse {
-                      val SequenceExec(components) = next.exec
+                      val SequenceExecMetaData(components) = next.exec
                       invokeSequence(user, next, components, params, None, Some(session.activationId), false, 0)
                         .map(r => r._1)
                     }
@@ -530,7 +530,7 @@ protected[actions] object ActivationFinisher {
     // when the future completes, self-destruct
     promise.future.andThen { case _ => shutdown() }
 
-    val preemptiveMsgs: Buffer[Cancellable] = Buffer.empty
+    var preemptiveMsgs = Vector.empty[Cancellable]
 
     def receive = {
       case ActivationFinisher.Finish(activation) =>
@@ -539,13 +539,13 @@ protected[actions] object ActivationFinisher {
       case msg @ Scheduler.WorkOnceNow =>
         // try up to three times when pre-emptying the schedule
         fastPollPeriods.foreach { s =>
-          preemptiveMsgs += context.system.scheduler.scheduleOnce(s, poller, msg)
+          preemptiveMsgs = preemptiveMsgs :+ context.system.scheduler.scheduleOnce(s, poller, msg)
         }
     }
 
     def shutdown(): Unit = {
       preemptiveMsgs.foreach(_.cancel())
-      preemptiveMsgs.clear()
+      preemptiveMsgs = Vector.empty
       context.stop(poller)
       context.stop(self)
     }
@@ -553,7 +553,7 @@ protected[actions] object ActivationFinisher {
     override def postStop() = {
       logging.info(this, "finisher shutdown")
       preemptiveMsgs.foreach(_.cancel())
-      preemptiveMsgs.clear()
+      preemptiveMsgs = Vector.empty
       context.stop(poller)
     }
   }

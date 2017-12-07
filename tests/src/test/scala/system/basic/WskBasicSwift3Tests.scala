@@ -23,7 +23,7 @@ import org.scalatest.junit.JUnitRunner
 import common.JsHelpers
 import common.TestHelpers
 import common.TestUtils
-import common.Wsk
+import common.BaseWsk
 import common.WskProps
 import common.WskTestHelpers
 import spray.json.pimpString
@@ -32,12 +32,12 @@ import common.TestUtils.RunResult
 import spray.json.JsObject
 
 @RunWith(classOf[JUnitRunner])
-class WskBasicSwift3Tests extends TestHelpers with WskTestHelpers with JsHelpers {
+abstract class WskBasicSwift3Tests extends TestHelpers with WskTestHelpers with JsHelpers {
 
-  implicit val wskprops = WskProps()
-  val wsk = new Wsk
-  val defaultAction = Some(TestUtils.getTestActionFilename("hello.swift"))
-  lazy val currentSwiftDefaultKind = "swift:3"
+  implicit val wskprops: common.WskProps = WskProps()
+  val wsk: BaseWsk
+  val defaultAction: Some[String] = Some(TestUtils.getTestActionFilename("hello.swift"))
+  lazy val currentSwiftDefaultKind = "swift:3.1.1"
 
   behavior of "Swift runtime"
 

@@ -18,11 +18,11 @@
 package whisk.core.containerpool.test
 
 import java.time.Instant
+
 import scala.concurrent.Future
 import scala.concurrent.Promise
 import scala.concurrent.duration._
 import org.junit.runner.RunWith
-import org.scalamock.scalatest.MockFactory
 import org.scalatest.BeforeAndAfterAll
 import org.scalatest.FlatSpecLike
 import org.scalatest.Matchers
@@ -33,10 +33,13 @@ import akka.actor.FSM
 import akka.actor.FSM.CurrentState
 import akka.actor.FSM.SubscribeTransitionCallBack
 import akka.actor.FSM.Transition
+import akka.stream.scaladsl.Source
 import akka.testkit.ImplicitSender
 import akka.testkit.TestKit
+import akka.util.ByteString
 import common.LoggedFunction
 import common.StreamLogging
+
 import scala.concurrent.ExecutionContext
 import spray.json._
 import spray.json.DefaultJsonProtocol._
@@ -44,10 +47,12 @@ import whisk.common.Logging
 import whisk.common.TransactionId
 import whisk.core.connector.ActivationMessage
 import whisk.core.containerpool._
+import whisk.core.containerpool.logging.LogCollectingException
 import whisk.core.entity._
 import whisk.core.entity.ExecManifest.RuntimeManifest
 import whisk.core.entity.ExecManifest.ImageName
 import whisk.core.entity.size._
+import whisk.http.Messages
 
 @RunWith(classOf[JUnitRunner])
 class ContainerProxyTests
@@ -56,7 +61,6 @@ class ContainerProxyTests
     with FlatSpecLike
     with Matchers
     with BeforeAndAfterAll
-    with MockFactory
     with StreamLogging {
 
   override def afterAll = TestKit.shutdownActorSystem(system)
@@ -146,7 +150,19 @@ class ContainerProxyTests
       response
   }
 
-  val store = stubFunction[TransactionId, WhiskActivation, Future[Any]]
+  def createCollector(response: Future[ActivationLogs] = Future.successful(ActivationLogs(Vector.empty))) =
+    LoggedFunction {
+      (transid: TransactionId,
+       user: Identity,
+       activation: WhiskActivation,
+       container: Container,
+       action: ExecutableWhiskAction) =>
+        response
+    }
+
+  def createStore = LoggedFunction { (transid: TransactionId, activation: WhiskActivation) =>
+    Future.successful(())
+  }
 
   behavior of "ContainerProxy"
 
@@ -156,8 +172,11 @@ class ContainerProxyTests
   it should "create a container given a Start message" in within(timeout) {
     val container = new TestContainer
     val factory = createFactory(Future.successful(container))
+    val store = createStore
 
-    val machine = childActorOf(ContainerProxy.props(factory, createAcker, store, InstanceId(0), pauseGrace = timeout))
+    val machine =
+      childActorOf(
+        ContainerProxy.props(factory, createAcker, store, createCollector(), InstanceId(0), pauseGrace = timeout))
     registerCallback(machine)
     preWarm(machine)
 
@@ -173,8 +192,11 @@ class ContainerProxyTests
     val container = new TestContainer
     val factory = createFactory(Future.successful(container))
     val acker = createAcker
+    val store = createStore
+    val collector = createCollector()
 
-    val machine = childActorOf(ContainerProxy.props(factory, acker, store, InstanceId(0), pauseGrace = timeout))
+    val machine =
+      childActorOf(ContainerProxy.props(factory, acker, store, collector, InstanceId(0), pauseGrace = timeout))
     registerCallback(machine)
 
     preWarm(machine)
@@ -193,11 +215,11 @@ class ContainerProxyTests
       factory.calls should have size 1
       container.initializeCount shouldBe 1
       container.runCount shouldBe 1
-      container.logsCount shouldBe 1
+      collector.calls should have size 1
       container.suspendCount shouldBe 1
       container.destroyCount shouldBe 1
       acker.calls should have size 1
-      store.verify(message.transid, *)
+      store.calls should have size 1
     }
   }
 
@@ -205,8 +227,11 @@ class ContainerProxyTests
     val container = new TestContainer
     val factory = createFactory(Future.successful(container))
     val acker = createAcker
+    val store = createStore
+    val collector = createCollector()
 
-    val machine = childActorOf(ContainerProxy.props(factory, acker, store, InstanceId(0), pauseGrace = timeout))
+    val machine =
+      childActorOf(ContainerProxy.props(factory, acker, store, collector, InstanceId(0), pauseGrace = timeout))
     registerCallback(machine)
     preWarm(machine)
 
@@ -218,10 +243,10 @@ class ContainerProxyTests
       factory.calls should have size 1
       container.initializeCount shouldBe 1
       container.runCount shouldBe 2
-      container.logsCount shouldBe 2
+      collector.calls should have size 2
       container.suspendCount shouldBe 0
       acker.calls should have size 2
-      store.verify(message.transid, *).repeat(2)
+      store.calls should have size 2
     }
   }
 
@@ -229,8 +254,11 @@ class ContainerProxyTests
     val container = new TestContainer
     val factory = createFactory(Future.successful(container))
     val acker = createAcker
+    val store = createStore
+    val collector = createCollector()
 
-    val machine = childActorOf(ContainerProxy.props(factory, acker, store, InstanceId(0), pauseGrace = timeout))
+    val machine =
+      childActorOf(ContainerProxy.props(factory, acker, store, collector, InstanceId(0), pauseGrace = timeout))
     registerCallback(machine)
     preWarm(machine)
 
@@ -243,11 +271,11 @@ class ContainerProxyTests
       factory.calls should have size 1
       container.initializeCount shouldBe 1
       container.runCount shouldBe 2
-      container.logsCount shouldBe 2
+      collector.calls should have size 2
       container.suspendCount shouldBe 1
       container.resumeCount shouldBe 1
       acker.calls should have size 2
-      store.verify(message.transid, *).repeat(2)
+      store.calls should have size 2
     }
   }
 
@@ -255,8 +283,11 @@ class ContainerProxyTests
     val container = new TestContainer
     val factory = createFactory(Future.successful(container))
     val acker = createAcker
+    val store = createStore
+    val collector = createCollector()
 
-    val machine = childActorOf(ContainerProxy.props(factory, acker, store, InstanceId(0), pauseGrace = timeout))
+    val machine =
+      childActorOf(ContainerProxy.props(factory, acker, store, collector, InstanceId(0), pauseGrace = timeout))
     registerCallback(machine)
     run(machine, Uninitialized)
 
@@ -264,9 +295,9 @@ class ContainerProxyTests
       factory.calls should have size 1
       container.initializeCount shouldBe 1
       container.runCount shouldBe 1
-      container.logsCount shouldBe 1
+      collector.calls should have size 1
       acker.calls should have size 1
-      store.verify(message.transid, *).repeat(1)
+      store.calls should have size 1
     }
   }
 
@@ -277,8 +308,11 @@ class ContainerProxyTests
     val container = new TestContainer
     val factory = createFactory(Future.failed(new Exception()))
     val acker = createAcker
+    val store = createStore
+    val collector = createCollector()
 
-    val machine = childActorOf(ContainerProxy.props(factory, acker, store, InstanceId(0), pauseGrace = timeout))
+    val machine =
+      childActorOf(ContainerProxy.props(factory, acker, store, collector, InstanceId(0), pauseGrace = timeout))
     registerCallback(machine)
     machine ! Run(action, message)
     expectMsg(Transition(machine, Uninitialized, Running))
@@ -288,11 +322,11 @@ class ContainerProxyTests
       factory.calls should have size 1
       container.initializeCount shouldBe 0
       container.runCount shouldBe 0
-      container.logsCount shouldBe 0 // gather no logs
+      collector.calls should have size 0 // gather no logs
       container.destroyCount shouldBe 0 // no destroying possible as no container could be obtained
       acker.calls should have size 1
       acker.calls(0)._2.response should be a 'whiskError
-      store.verify(message.transid, *).repeat(1)
+      store.calls should have size 1
     }
   }
 
@@ -306,8 +340,11 @@ class ContainerProxyTests
     }
     val factory = createFactory(Future.successful(container))
     val acker = createAcker
+    val store = createStore
+    val collector = createCollector()
 
-    val machine = childActorOf(ContainerProxy.props(factory, acker, store, InstanceId(0), pauseGrace = timeout))
+    val machine =
+      childActorOf(ContainerProxy.props(factory, acker, store, collector, InstanceId(0), pauseGrace = timeout))
     registerCallback(machine)
     machine ! Run(action, message)
     expectMsg(Transition(machine, Uninitialized, Running))
@@ -318,10 +355,10 @@ class ContainerProxyTests
       factory.calls should have size 1
       container.initializeCount shouldBe 1
       container.runCount shouldBe 0 // should not run the action
-      container.logsCount shouldBe 1
+      collector.calls should have size 1
       container.destroyCount shouldBe 1
       acker.calls(0)._2.response shouldBe ActivationResponse.applicationError("boom")
-      store.verify(message.transid, *).repeat(1)
+      store.calls should have size 1
     }
   }
 
@@ -335,8 +372,11 @@ class ContainerProxyTests
     }
     val factory = createFactory(Future.successful(container))
     val acker = createAcker
+    val store = createStore
+    val collector = createCollector()
 
-    val machine = childActorOf(ContainerProxy.props(factory, acker, store, InstanceId(0), pauseGrace = timeout))
+    val machine =
+      childActorOf(ContainerProxy.props(factory, acker, store, collector, InstanceId(0), pauseGrace = timeout))
     registerCallback(machine)
     machine ! Run(action, message)
     expectMsg(Transition(machine, Uninitialized, Running))
@@ -347,10 +387,69 @@ class ContainerProxyTests
       factory.calls should have size 1
       container.initializeCount shouldBe 1
       container.runCount shouldBe 1
-      container.logsCount shouldBe 1
+      collector.calls should have size 1
       container.destroyCount shouldBe 1
       acker.calls(0)._2.response shouldBe ActivationResponse.applicationError("boom")
-      store.verify(message.transid, *).repeat(1)
+      store.calls should have size 1
+    }
+  }
+
+  it should "complete the transaction and destroy the container if log reading failed" in {
+    val container = new TestContainer
+    val factory = createFactory(Future.successful(container))
+    val acker = createAcker
+    val store = createStore
+
+    val partialLogs = Vector("this log line made it", Messages.logFailure)
+    val collector =
+      createCollector(Future.failed(LogCollectingException(ActivationLogs(partialLogs))))
+
+    val machine =
+      childActorOf(ContainerProxy.props(factory, acker, store, collector, InstanceId(0), pauseGrace = timeout))
+    registerCallback(machine)
+    machine ! Run(action, message)
+    expectMsg(Transition(machine, Uninitialized, Running))
+    expectMsg(ContainerRemoved) // The message is sent as soon as the container decides to destroy itself
+    expectMsg(Transition(machine, Running, Removing))
+
+    awaitAssert {
+      factory.calls should have size 1
+      container.initializeCount shouldBe 1
+      container.runCount shouldBe 1
+      collector.calls should have size 1
+      container.destroyCount shouldBe 1
+      acker.calls should have size 1
+      acker.calls(0)._2.response shouldBe ActivationResponse.success()
+      store.calls should have size 1
+      store.calls(0)._2.logs shouldBe ActivationLogs(partialLogs)
+    }
+  }
+
+  it should "complete the transaction and destroy the container if log reading failed terminally" in {
+    val container = new TestContainer
+    val factory = createFactory(Future.successful(container))
+    val acker = createAcker
+    val store = createStore
+    val collector = createCollector(Future.failed(new Exception))
+
+    val machine =
+      childActorOf(ContainerProxy.props(factory, acker, store, collector, InstanceId(0), pauseGrace = timeout))
+    registerCallback(machine)
+    machine ! Run(action, message)
+    expectMsg(Transition(machine, Uninitialized, Running))
+    expectMsg(ContainerRemoved) // The message is sent as soon as the container decides to destroy itself
+    expectMsg(Transition(machine, Running, Removing))
+
+    awaitAssert {
+      factory.calls should have size 1
+      container.initializeCount shouldBe 1
+      container.runCount shouldBe 1
+      collector.calls should have size 1
+      container.destroyCount shouldBe 1
+      acker.calls should have size 1
+      acker.calls(0)._2.response shouldBe ActivationResponse.success()
+      store.calls should have size 1
+      store.calls(0)._2.logs shouldBe ActivationLogs(Vector(Messages.logFailure))
     }
   }
 
@@ -363,8 +462,10 @@ class ContainerProxyTests
     }
     val factory = createFactory(Future.successful(container))
     val acker = createAcker
+    val store = createStore
 
-    val machine = childActorOf(ContainerProxy.props(factory, acker, store, InstanceId(0), pauseGrace = timeout))
+    val machine =
+      childActorOf(ContainerProxy.props(factory, acker, store, createCollector(), InstanceId(0), pauseGrace = timeout))
     registerCallback(machine)
     run(machine, Uninitialized) // first run an activation
     timeout(machine) // times out Ready state so container suspends
@@ -395,8 +496,10 @@ class ContainerProxyTests
     }
     val factory = createFactory(Future.successful(container))
     val acker = createAcker
+    val store = createStore
 
-    val machine = childActorOf(ContainerProxy.props(factory, acker, store, InstanceId(0), pauseGrace = timeout))
+    val machine =
+      childActorOf(ContainerProxy.props(factory, acker, store, createCollector(), InstanceId(0), pauseGrace = timeout))
     registerCallback(machine)
     run(machine, Uninitialized)
     timeout(machine) // times out Ready state so container suspends
@@ -427,8 +530,11 @@ class ContainerProxyTests
     }
     val factory = createFactory(Future.successful(container))
     val acker = createAcker
+    val store = createStore
+    val collector = createCollector()
 
-    val machine = childActorOf(ContainerProxy.props(factory, acker, store, InstanceId(0), pauseGrace = timeout))
+    val machine =
+      childActorOf(ContainerProxy.props(factory, acker, store, collector, InstanceId(0), pauseGrace = timeout))
     registerCallback(machine)
 
     // Start running the action
@@ -451,11 +557,11 @@ class ContainerProxyTests
       factory.calls should have size 1
       container.initializeCount shouldBe 1
       container.runCount shouldBe 1
-      container.logsCount shouldBe 1
+      collector.calls should have size 1
       container.suspendCount shouldBe 0 // skips pausing the container
       container.destroyCount shouldBe 1
       acker.calls should have size 1
-      store.verify(message.transid, *).repeat(1)
+      store.calls should have size 1
     }
   }
 
@@ -474,8 +580,11 @@ class ContainerProxyTests
     }
     val factory = createFactory(Future.successful(container))
     val acker = createAcker
+    val store = createStore
+    val collector = createCollector()
 
-    val machine = childActorOf(ContainerProxy.props(factory, acker, store, InstanceId(0), pauseGrace = timeout))
+    val machine =
+      childActorOf(ContainerProxy.props(factory, acker, store, collector, InstanceId(0), pauseGrace = timeout))
     registerCallback(machine)
     run(machine, Uninitialized)
     timeout(machine)
@@ -496,12 +605,12 @@ class ContainerProxyTests
       factory.calls should have size 1
       container.initializeCount shouldBe 1
       container.runCount shouldBe 1
-      container.logsCount shouldBe 1
+      collector.calls should have size 1
       container.suspendCount shouldBe 1
       container.resumeCount shouldBe 1
       container.destroyCount shouldBe 1
       acker.calls should have size 1
-      store.verify(message.transid, *).repeat(1)
+      store.calls should have size 1
     }
   }
 
@@ -555,9 +664,6 @@ class ContainerProxyTests
 
       Future.successful((Interval.zero, ActivationResponse.success()))
     }
-    def logs(limit: ByteSize, waitForSentinel: Boolean)(implicit transid: TransactionId): Future[Vector[String]] = {
-      logsCount += 1
-      Future.successful(Vector("helloTest"))
-    }
+    def logs(limit: ByteSize, waitForSentinel: Boolean)(implicit transid: TransactionId): Source[ByteString, Any] = ???
   }
 }

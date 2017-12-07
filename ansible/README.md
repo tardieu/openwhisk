@@ -147,6 +147,15 @@ You need to run `initdb.yml` on couchdb **every time** you do a fresh deploy Cou
 The playbooks `wipe.yml` and `postdeploy.yml` should be run on a fresh deployment only, otherwise all transient
 data that include actions and activations are lost.
 
+#### Limitation
+
+You can not run multiple CouchDB nodes on a single machine.
+This limitation comes from Erlang EPMD.
+When CouchDB forms a cluster, it counts on EPMD to find other nodes.
+If we want to run multiple nodes on a single machine, we must differentiate EPMD port(`4369`) for each nodes. But if this port is different on each nodes, they cannot find each other.
+So if you want to deploy multiple CouchDB nodes, all nodes should be placed on different machines respectively.
+
+
 ### Deploying Using Cloudant
 - Make sure your `db_local.ini` file is set up for Cloudant. See [Setup](#setup)
 - Then execute
@@ -170,10 +179,27 @@ data that include actions and activations are lost.
 
 Use `ansible-playbook -i environments/<environment> openwhisk.yml` to avoid wiping the data store. This is useful to start OpenWhisk after restarting your Operating System.
 
-### Verification after Deployment
-After a successful deployment you can use the `wsk` CLI (located in the `bin` folder of the repository) to verify that OpenWhisk is operable.
-See main [README](https://github.com/apache/incubator-openwhisk/blob/master/README.md) for instructions on how to setup and use `wsk`.
+### Configuring the installation of `wsk` CLI
+There are two installation modes to install `wsk` CLI: remote and local.
 
+The mode "remote" means to download the `wsk` binaries from available web links. By default, OpenWhisk sets
+the installation mode to remote and downloads the binaries from the CLI [release page](https://github.com/apache/incubator-openwhisk-cli/releases), where OpenWhisk publishes the official `wsk` binaries.
+
+The mode "local" means to build and install the `wsk` binaries from local CLI project. You can download the source code
+of OpenWhisk CLI via [this link](https://github.com/apache/incubator-openwhisk-cli). Let's assume your OpenWhisk CLI home directory is <openwhisk_cli_home>. After you download the source code, use the gradle command to build the binaries:
+
+```
+cd <openwhisk_cli_home>
+./gradlew buildBinaries
+```
+
+All the binaries are generated and put under the folder of <openwhisk_cli_home>/bin. Then, use the following ansible command to configure the CLI installation mode:
+
+```
+ansible-playbook -i environments/<environment> openwhisk.yml -e cli_installation_mode=local -e openwhisk_cli_home=<openwhisk_cli_home>
+```
+
+The parameter cli_installation_mode specifies the CLI installation mode and the parameter openwhisk_cli_home specifies the home directory of your local OpenWhisk CLI.
 
 ### Hot-swapping a Single Component
 The playbook structure allows you to clean, deploy or re-deploy a single component as well as the entire OpenWhisk stack. Let's assume you have deployed the entire stack using the `openwhisk.yml` playbook. You then make a change to a single component, for example the invoker. You will probably want a new tag on the invoker image so you first build it using:

@@ -47,6 +47,7 @@ import whisk.core.containerpool.ContainerPool
 import whisk.core.containerpool.ContainerProxy
 import whisk.core.containerpool.PrewarmingConfig
 import whisk.core.containerpool.Run
+import whisk.core.containerpool.logging.LogStoreProvider
 import whisk.core.database.NoDocumentException
 import whisk.core.entity._
 import whisk.core.entity.size._
@@ -60,6 +61,9 @@ class InvokerReactive(config: WhiskConfig, instance: InstanceId, producer: Messa
   implicit val materializer: ActorMaterializer = ActorMaterializer()
   implicit val ec = actorSystem.dispatcher
   implicit val cfg = config
+
+  private val logsProvider = SpiLoader.get[LogStoreProvider].logStore(actorSystem)
+  logging.info(this, s"LogStoreProvider: ${logsProvider.getClass}")
 
   /**
    * Factory used by the ContainerProxy to physically create a new container.
@@ -80,7 +84,7 @@ class InvokerReactive(config: WhiskConfig, instance: InstanceId, producer: Messa
           "--cap-drop" -> Set("NET_RAW", "NET_ADMIN"),
           "--ulimit" -> Set("nofile=1024:1024"),
           "--pids-limit" -> Set("1024"),
-          "--dns" -> config.invokerContainerDns.toSet))
+          "--dns" -> config.invokerContainerDns.toSet) ++ logsProvider.containerParameters)
   containerFactory.init()
   sys.addShutdownHook(containerFactory.cleanup())
 
@@ -94,7 +98,7 @@ class InvokerReactive(config: WhiskConfig, instance: InstanceId, producer: Messa
   val msgProvider = SpiLoader.get[MessagingProvider]
   val consumer = msgProvider.getConsumer(
     config,
-    "invokers",
+    topic,
     topic,
     maximumContainers,
     maxPollInterval = TimeLimit.MAX_DURATION + 1.minute)
@@ -139,7 +143,7 @@ class InvokerReactive(config: WhiskConfig, instance: InstanceId, producer: Messa
 
   /** Creates a ContainerProxy Actor when being called. */
   val childFactory = (f: ActorRefFactory) =>
-    f.actorOf(ContainerProxy.props(containerFactory.createContainer _, ack, store, instance))
+    f.actorOf(ContainerProxy.props(containerFactory.createContainer, ack, store, logsProvider.collectLogs, instance))
 
   val prewarmKind = "nodejs:6"
   val prewarmExec = ExecManifest.runtimesManifest
@@ -199,7 +203,7 @@ class InvokerReactive(config: WhiskConfig, instance: InstanceId, producer: Messa
               // errors and should cause the invoker to be considered unhealthy.
               val response = t match {
                 case _: NoDocumentException => ActivationResponse.applicationError(Messages.actionRemovedWhileInvoking)
-                case _                      => ActivationResponse.whiskError(Messages.actionRemovedWhileInvoking)
+                case _                      => ActivationResponse.whiskError(Messages.actionMismatchWhileInvoking)
               }
               val now = Instant.now
               val causedBy = if (msg.causedBySequence) Parameters("causedBy", "sequence".toJson) else Parameters()
