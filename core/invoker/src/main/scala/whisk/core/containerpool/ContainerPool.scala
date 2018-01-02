@@ -25,6 +25,7 @@ import akka.actor.ActorRefFactory
 import akka.actor.Props
 import whisk.common.AkkaLogging
 
+import whisk.common.TransactionId
 import whisk.core.entity.ByteSize
 import whisk.core.entity.CodeExec
 import whisk.core.entity.EntityName
@@ -72,7 +73,7 @@ class ContainerPool(childFactory: ActorRefFactory => ActorRef,
   var prewarmedPool = immutable.Map.empty[ActorRef, ContainerData]
 
   prewarmConfig.foreach { config =>
-    logging.info(this, s"pre-warming ${config.count} ${config.exec.kind} containers")
+    logging.info(this, s"pre-warming ${config.count} ${config.exec.kind} containers")(TransactionId.invokerWarmup)
     (1 to config.count).foreach { _ =>
       prewarmContainer(config.exec, config.memoryLimit)
     }
@@ -94,7 +95,7 @@ class ContainerPool(childFactory: ActorRefFactory => ActorRef,
           }
           .orElse {
             // Remove a container and create a new one for the given job
-            ContainerPool.remove(r.action, r.msg.user.namespace, freePool).map { toDelete =>
+            ContainerPool.remove(freePool).map { toDelete =>
               removeContainer(toDelete)
               takePrewarmContainer(r.action).getOrElse {
                 createContainer()
@@ -199,9 +200,9 @@ object ContainerPool {
    * @param idles a map of idle containers, awaiting work
    * @return a container if one found
    */
-  def schedule[A](action: ExecutableWhiskAction,
-                  invocationNamespace: EntityName,
-                  idles: Map[A, ContainerData]): Option[(A, ContainerData)] = {
+  protected[containerpool] def schedule[A](action: ExecutableWhiskAction,
+                                           invocationNamespace: EntityName,
+                                           idles: Map[A, ContainerData]): Option[(A, ContainerData)] = {
     idles.find {
       case (_, WarmedData(_, `invocationNamespace`, `action`, _)) => true
       case _                                                      => false
@@ -209,21 +210,17 @@ object ContainerPool {
   }
 
   /**
-   * Finds the best container to remove to make space for the job passed to run.
+   * Finds the oldest previously used container to remove to make space for the job passed to run.
    *
-   * Determines the least recently used Free container in the pool.
+   * NOTE: This method is never called to remove an action that is in the pool already,
+   * since this would be picked up earlier in the scheduler and the container reused.
    *
-   * @param action the action that wants to get a container
-   * @param invocationNamespace the namespace, that wants to run the action
    * @param pool a map of all free containers in the pool
    * @return a container to be removed iff found
    */
-  def remove[A](action: ExecutableWhiskAction,
-                invocationNamespace: EntityName,
-                pool: Map[A, ContainerData]): Option[A] = {
-    // Try to find a Free container that is initialized with any OTHER action
+  protected[containerpool] def remove[A](pool: Map[A, ContainerData]): Option[A] = {
     val freeContainers = pool.collect {
-      case (ref, w: WarmedData) if (w.action != action || w.invocationNamespace != invocationNamespace) => ref -> w
+      case (ref, w: WarmedData) => ref -> w
     }
 
     if (freeContainers.nonEmpty) {
