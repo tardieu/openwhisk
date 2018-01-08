@@ -25,11 +25,12 @@ import scala.util.Try
 import spray.json._
 import spray.json.DefaultJsonProtocol._
 import whisk.common.TransactionId
+import whisk.core.PureConfigKeys
 import whisk.core.database.ArtifactStore
 import whisk.core.database.DocumentFactory
 import whisk.core.database.StaleParameter
-import whisk.core.WhiskConfig
-import whisk.core.WhiskConfig.{dbActivationsDesignDoc, dbActivationsFilterDesignDoc}
+
+import pureconfig._
 
 /**
  * A WhiskActivation provides an abstraction of the meta-data
@@ -147,13 +148,9 @@ object WhiskActivation
 
   override val collectionName = "activations"
 
-  // FIXME: reading the design doc from sys.env instead of a canonical property reader
-  // because WhiskConfig requires a logger, which requires an actor system, neither of
-  // which are readily available here; rather than introduce significant refactoring,
-  // defer this fix until WhiskConfig is refactored itself, which is planned to introduce
-  // type safe properties
-  private val mainDdoc = WhiskConfig.readFromEnv(dbActivationsDesignDoc).getOrElse("whisks.v2")
-  private val filtersDdoc = WhiskConfig.readFromEnv(dbActivationsFilterDesignDoc).getOrElse("whisks-filters.v2")
+  private val dbConfig = loadConfigOrThrow[DBConfig](PureConfigKeys.whiskDB)
+  private val mainDdoc = dbConfig.activationsDdoc
+  private val filtersDdoc = dbConfig.activationsFilterDdoc
 
   /** The main view for activations, keyed by namespace, sorted by date. */
   override lazy val view = WhiskEntityQueries.view(mainDdoc, collectionName)

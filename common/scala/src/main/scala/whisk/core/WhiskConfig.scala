@@ -178,9 +178,6 @@ object WhiskConfig {
   val dbAuths = "db.whisk.auths"
   val dbWhisk = "db.whisk.actions"
   val dbActivations = "db.whisk.activations"
-  val dbWhiskDesignDoc = "db.whisk.actions.ddoc"
-  val dbActivationsDesignDoc = "db.whisk.activations.ddoc"
-  val dbActivationsFilterDesignDoc = "db.whisk.activations.filter.ddoc"
 
   // these are not private because they are needed
   // in the invoker (they are part of the environment
@@ -238,4 +235,13 @@ object WhiskConfig {
   val controllerSeedNodes = "akka.cluster.seed.nodes"
   val controllerLocalBookkeeping = "controller.localBookkeeping"
   val controllerHighAvailability = "controller.ha"
+}
+
+object PureConfigKeys {
+  val whiskLoadbalancer = "whisk.loadbalancer"
+
+  val whiskKafka = "whisk.kafka"
+  val whiskKafkaTopics = "whisk.kafka.topics"
+
+  val whiskDB = "whisk.db"
 }

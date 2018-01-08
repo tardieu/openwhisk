@@ -109,9 +109,7 @@ object Messages {
   val bindingCannotReferenceBinding = "Cannot bind to another package binding."
   val requestedBindingIsNotValid = "Cannot bind to a resource that is not a package."
   val notAllowedOnBinding = "Operation not permitted on package binding."
-  def packageNameIsReserved(name: String) = {
-    s"Package name '$name' is reserved."
-  }
+  def packageNameIsReserved(name: String) = s"Package name '$name' is reserved."
 
   /** Error messages for sequence activations. */
   def sequenceRetrieveActivationTimeout(id: ActivationId) =
@@ -126,6 +124,7 @@ object Messages {
   val abnormalInitialization = "The action did not initialize and exited unexpectedly."
   val abnormalRun = "The action did not produce a valid response and exited unexpectedly."
   val memoryExhausted = "The action exhausted its memory and was aborted."
+  val docsNotAllowedWithCount = "The parameter 'docs' is not permitted with 'count'."
   def badNameFilter(value: String) = s"Parameter may be a 'simple' name or 'package-name/simple' name: $value"
   def badEpoch(value: String) = s"Parameter is not a valid value for epoch seconds: $value"
 
@@ -187,6 +186,7 @@ object Messages {
 
   val actionRemovedWhileInvoking = "Action could not be found or may have been deleted."
   val actionMismatchWhileInvoking = "Action version is not compatible and cannot be invoked."
+  val actionFetchErrorWhileInvoking = "Action could not be fetched."
 }
 
 /** Replaces rejections with Json object containing cause and transaction id. */
