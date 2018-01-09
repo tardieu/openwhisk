@@ -49,6 +49,8 @@ abstract class WskConductorTests extends TestHelpers with WskTestHelpers with Js
   val allowedActionDuration = 120 seconds
 
   val testString = "this is a test"
+  val invalid = "invalid#Action"
+  val missing = "missingAction"
 
   behavior of "Whisk conductor controller"
 
@@ -87,18 +89,18 @@ abstract class WskConductorTests extends TestHelpers with WskTestHelpers with Js
 
     // an invalid action name
     val invalidrun =
-      wsk.action.invoke(echo, Map("payload" -> testString.toJson, "action" -> "invalid#action#name".toJson))
+      wsk.action.invoke(echo, Map("payload" -> testString.toJson, "action" -> invalid.toJson))
     withActivation(wsk.activation, invalidrun) { activation =>
       activation.response.status shouldBe "application error"
-      activation.response.result.toString should include("failed to parse next action")
+      activation.response.result.toString should include("Failed to parse action")
       checkConductorLogsAndAnnotations(activation, 1) // echo
     }
 
     // an undefined action
-    val undefinedrun = wsk.action.invoke(echo, Map("payload" -> testString.toJson, "action" -> "undefined".toJson))
+    val undefinedrun = wsk.action.invoke(echo, Map("payload" -> testString.toJson, "action" -> missing.toJson))
     withActivation(wsk.activation, undefinedrun) { activation =>
       activation.response.status shouldBe "application error"
-      activation.response.result.toString should include("failed to resolve next action")
+      activation.response.result.toString should include("Failed to resolve action")
       checkConductorLogsAndAnnotations(activation, 1) // echo
     }
   }
