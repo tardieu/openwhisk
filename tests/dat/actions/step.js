@@ -1,10 +1,6 @@
 /**
- * Deep increment.
+ * Increment action.
  */
-function main(params) {
-    if (params.params) {
-        params.params = main(params.params)
-        return params
-    }
-    return { n: params.n + 1 }
+function main({ n }) {
+    return { n: n + 1 }
 }

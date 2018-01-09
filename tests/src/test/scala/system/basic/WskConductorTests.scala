@@ -87,11 +87,11 @@ abstract class WskConductorTests extends TestHelpers with WskTestHelpers with Js
   }
 
   it should "invoke a conductor action with dynamic steps" in withAssetCleaner(wskprops) { (wp, assetHelper) =>
-    val echo = "echo" // echo conductor action
-    assetHelper.withCleaner(wsk.action, echo) { (action, _) =>
+    val conductor = "conductor" // conductor action
+    assetHelper.withCleaner(wsk.action, conductor) { (action, _) =>
       action.create(
-        echo,
-        Some(TestUtils.getTestActionFilename("echo.js")),
+        conductor,
+        Some(TestUtils.getTestActionFilename("conductor.js")),
         annotations = Map("conductor" -> true.toJson))
     }
 
@@ -101,43 +101,46 @@ abstract class WskConductorTests extends TestHelpers with WskTestHelpers with Js
     }
 
     // dynamically invoke step action
-    val run = wsk.action.invoke(echo, Map("action" -> step.toJson, "params" -> JsObject("n" -> 1.toJson)))
+    val run = wsk.action.invoke(conductor, Map("action" -> step.toJson, "n" -> 1.toJson))
     withActivation(wsk.activation, run) { activation =>
       activation.response.status shouldBe "success"
       activation.response.result shouldBe Some(JsObject("n" -> 2.toJson))
-      checkConductorLogsAndAnnotations(activation, 3) // echo, step, echo
+      checkConductorLogsAndAnnotations(activation, 3) // conductor, step, conductor
     }
 
     // dynamically invoke step action, forwarding state
     val secondrun = wsk.action.invoke(
-      echo,
-      Map("action" -> step.toJson, "state" -> JsObject("witness" -> 42.toJson), "params" -> JsObject("n" -> 1.toJson)))
+      conductor,
+      Map(
+        "action" -> step.toJson, // invoke step
+        "state" -> JsObject("witness" -> 42.toJson), // dummy state
+        "n" -> 1.toJson))
     withActivation(wsk.activation, secondrun) { activation =>
       activation.response.status shouldBe "success"
       activation.response.result shouldBe Some(JsObject("n" -> 2.toJson, "witness" -> 42.toJson))
-      checkConductorLogsAndAnnotations(activation, 3) // echo, step, echo
+      checkConductorLogsAndAnnotations(activation, 3) // conductor, step, conductor
     }
 
     // dynamically invoke step action twice, forwarding state
     val thirdrun = wsk.action.invoke(
-      echo,
+      conductor,
       Map(
         "action" -> step.toJson, // invoke step
-        "state" -> JsObject("action" -> step.toJson, "state" -> JsObject("witness" -> 42.toJson)), // invoke step again
-        "params" -> JsObject("params" -> JsObject("n" -> 1.toJson))))
+        "state" -> JsObject("action" -> step.toJson), // invoke step again
+        "n" -> 1.toJson))
     withActivation(wsk.activation, thirdrun) { activation =>
       activation.response.status shouldBe "success"
-      activation.response.result shouldBe Some(JsObject("n" -> 3.toJson, "witness" -> 42.toJson))
-      checkConductorLogsAndAnnotations(activation, 5) // echo, step, echo, step, echo
+      activation.response.result shouldBe Some(JsObject("n" -> 3.toJson))
+      checkConductorLogsAndAnnotations(activation, 5) // conductor, step, conductor, step, conductor
     }
   }
 
   it should "invoke nested conductor actions" in withAssetCleaner(wskprops) { (wp, assetHelper) =>
-    val echo = "echo" // echo conductor action
-    assetHelper.withCleaner(wsk.action, echo) { (action, _) =>
+    val conductor = "conductor" // conductor action
+    assetHelper.withCleaner(wsk.action, conductor) { (action, _) =>
       action.create(
-        echo,
-        Some(TestUtils.getTestActionFilename("echo.js")),
+        conductor,
+        Some(TestUtils.getTestActionFilename("conductor.js")),
         annotations = Map("conductor" -> true.toJson))
     }
 
@@ -146,16 +149,17 @@ abstract class WskConductorTests extends TestHelpers with WskTestHelpers with Js
       action.create(step, Some(TestUtils.getTestActionFilename("step.js")))
     }
 
-    // invoke nested echo with single step
+    // invoke nested conductor with single step
     val run = wsk.action.invoke(
-      echo,
+      conductor,
       Map(
-        "action" -> echo.toJson, // invoke nested echo conductor
-        "params" -> JsObject("action" -> step.toJson, "params" -> JsObject("n" -> 1.toJson)))) // invoke nested step
+        "action" -> conductor.toJson, // invoke nested conductor
+        "params" -> JsObject("action" -> step.toJson), // invoke step (level 1)
+        "n" -> 1.toJson))
     withActivation(wsk.activation, run) { activation =>
       activation.response.status shouldBe "success"
       activation.response.result shouldBe Some(JsObject("n" -> 2.toJson))
-      checkConductorLogsAndAnnotations(activation, 3) // echo, nested echo, echo
+      checkConductorLogsAndAnnotations(activation, 3) // conductor, nested conductor, conductor
       // check nested conductor invocation
       withActivation(
         wsk.activation,
@@ -165,23 +169,22 @@ abstract class WskConductorTests extends TestHelpers with WskTestHelpers with Js
         totalWait = allowedActionDuration) { nestedActivation =>
         nestedActivation.response.status shouldBe "success"
         nestedActivation.response.result shouldBe Some(JsObject("n" -> 2.toJson))
-        checkConductorLogsAndAnnotations(nestedActivation, 3) // echo, step, echo
+        checkConductorLogsAndAnnotations(nestedActivation, 3) // conductor, step, conductor
       }
     }
 
     // nested step followed by outer step
     val secondrun = wsk.action.invoke(
-      echo,
+      conductor,
       Map(
-        "action" -> echo.toJson, // invoke nested echo conductor
-        "state" -> JsObject("action" -> step.toJson), // invoked step on return of nested echo conductor
-        "params" -> JsObject(
-          "action" -> step.toJson, // invoke nested step
-          "params" -> JsObject("params" -> JsObject("params" -> JsObject("n" -> 1.toJson)))))) // 4-level deep: in, step, out, step
+        "action" -> conductor.toJson, // invoke nested conductor
+        "state" -> JsObject("action" -> step.toJson), // invoked step on return of nested conductor (level 0)
+        "params" -> JsObject("action" -> step.toJson), // invoke step (level 1)
+        "n" -> 1.toJson))
     withActivation(wsk.activation, secondrun) { activation =>
       activation.response.status shouldBe "success"
       activation.response.result shouldBe Some(JsObject("n" -> 3.toJson))
-      checkConductorLogsAndAnnotations(activation, 5) // echo, nested echo, echo, step, echo
+      checkConductorLogsAndAnnotations(activation, 5)
       // check nested conductor invocation
       withActivation(
         wsk.activation,
@@ -190,28 +193,26 @@ abstract class WskConductorTests extends TestHelpers with WskTestHelpers with Js
         pollPeriod = 60 seconds,
         totalWait = allowedActionDuration) { nestedActivation =>
         nestedActivation.response.status shouldBe "success"
-        nestedActivation.response.result shouldBe Some(JsObject("params" -> JsObject("n" -> 2.toJson)))
-        checkConductorLogsAndAnnotations(nestedActivation, 3) // echo, step, echo
+        nestedActivation.response.result shouldBe Some(JsObject("n" -> 2.toJson))
+        checkConductorLogsAndAnnotations(nestedActivation, 3)
       }
     }
 
     // two levels of nesting, three steps
     val thirdrun = wsk.action.invoke(
-      echo,
+      conductor,
       Map(
-        "action" -> echo.toJson, // invoke nested echo conductor
-        "state" -> JsObject("action" -> step.toJson),
+        "action" -> conductor.toJson, // invoke nested conductor
+        "state" -> JsObject("action" -> step.toJson), // invoke step on return (level 0)
         "params" -> JsObject(
-          "action" -> echo.toJson, // 2nd echo
-          "state" -> JsObject("action" -> step.toJson),
-          "params" -> JsObject(
-            "action" -> step.toJson,
-            "params" -> JsObject("params" -> JsObject(
-              "params" -> JsObject("params" -> JsObject("params" -> JsObject("n" -> 1.toJson)))))))))
+          "action" -> conductor.toJson, // invoked nested nested conductor
+          "state" -> JsObject("action" -> step.toJson), // invoke step on return (level 1)
+          "params" -> JsObject("action" -> step.toJson)), // invoke step (level 2)
+        "n" -> 1.toJson))
     withActivation(wsk.activation, thirdrun) { activation =>
       activation.response.status shouldBe "success"
       activation.response.result shouldBe Some(JsObject("n" -> 4.toJson))
-      checkConductorLogsAndAnnotations(activation, 5) // echo, nested echo, echo, step, echo
+      checkConductorLogsAndAnnotations(activation, 5)
       // check nested conductor invocation
       withActivation(
         wsk.activation,
@@ -220,8 +221,8 @@ abstract class WskConductorTests extends TestHelpers with WskTestHelpers with Js
         pollPeriod = 60 seconds,
         totalWait = allowedActionDuration) { nestedActivation =>
         nestedActivation.response.status shouldBe "success"
-        nestedActivation.response.result shouldBe Some(JsObject("params" -> JsObject("n" -> 3.toJson)))
-        checkConductorLogsAndAnnotations(nestedActivation, 5) // echo, nested echo, echo, step, echo
+        nestedActivation.response.result shouldBe Some(JsObject("n" -> 3.toJson))
+        checkConductorLogsAndAnnotations(nestedActivation, 5)
       }
     }
   }
