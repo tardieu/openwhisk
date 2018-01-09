@@ -17,8 +17,6 @@
 
 package system.basic
 
-import java.time.Instant
-
 import scala.concurrent.duration.DurationInt
 import scala.language.postfixOps
 
@@ -30,7 +28,6 @@ import common.JsHelpers
 import common.TestHelpers
 import common.TestUtils
 import common.BaseWsk
-import common.Wsk
 import common.WskProps
 import common.WskTestHelpers
 
