@@ -212,7 +212,7 @@ protected[actions] trait PrimitiveActions {
         }) // placeholder for result if blocking invoke
     }
 
-    if (session.steps >= 2 * actionSequenceLimit) {
+    if (session.steps > 2 * actionSequenceLimit) {
       val response = ActivationResponse.applicationError(compositionIsTooLong)
       completeAppActivation(user, session, response)
     } else {

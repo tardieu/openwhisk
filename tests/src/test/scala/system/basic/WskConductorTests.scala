@@ -24,6 +24,7 @@ import org.junit.runner.RunWith
 import org.scalatest.junit.JUnitRunner
 
 import common.ActivationResult
+import common.StreamLogging
 import common.JsHelpers
 import common.TestHelpers
 import common.TestUtils
@@ -37,9 +38,13 @@ import spray.json.JsObject
 import spray.json.pimpAny
 
 import whisk.core.entity.size.SizeInt
+import whisk.core.WhiskConfig
+import whisk.http.Messages.compositionIsTooLong
+import whisk.http.Messages.componentIsInvalid
+import whisk.http.Messages.componentIsMissing
 
 @RunWith(classOf[JUnitRunner])
-abstract class WskConductorTests extends TestHelpers with WskTestHelpers with JsHelpers {
+abstract class WskConductorTests extends TestHelpers with WskTestHelpers with JsHelpers with StreamLogging {
 
   implicit val wskprops = WskProps()
   val wsk: BaseWsk
@@ -48,6 +53,10 @@ abstract class WskConductorTests extends TestHelpers with WskTestHelpers with Js
   val testString = "this is a test"
   val invalid = "invalid#Action"
   val missing = "missingAction"
+
+  val whiskConfig = new WhiskConfig(Map(WhiskConfig.actionSequenceMaxLimit -> null))
+  assert(whiskConfig.isValid)
+  val limit = whiskConfig.actionSequenceLimit.toInt
 
   behavior of "Whisk conductor controller"
 
@@ -89,7 +98,7 @@ abstract class WskConductorTests extends TestHelpers with WskTestHelpers with Js
       wsk.action.invoke(echo, Map("payload" -> testString.toJson, "action" -> invalid.toJson))
     withActivation(wsk.activation, invalidrun) { activation =>
       activation.response.status shouldBe "application error"
-      activation.response.result.toString should include("Failed to parse action")
+      activation.response.result.get.fields.get("error") shouldBe Some(JsString(componentIsInvalid(JsString(invalid))))
       checkConductorLogsAndAnnotations(activation, 1) // echo
     }
 
@@ -97,7 +106,7 @@ abstract class WskConductorTests extends TestHelpers with WskTestHelpers with Js
     val undefinedrun = wsk.action.invoke(echo, Map("payload" -> testString.toJson, "action" -> missing.toJson))
     withActivation(wsk.activation, undefinedrun) { activation =>
       activation.response.status shouldBe "application error"
-      activation.response.result.toString should include("Failed to resolve action")
+      activation.response.result.get.fields.get("error") shouldBe Some(JsString(componentIsMissing(missing)))
       checkConductorLogsAndAnnotations(activation, 1) // echo
     }
   }
@@ -277,6 +286,40 @@ abstract class WskConductorTests extends TestHelpers with WskTestHelpers with Js
         nestedActivation.response.result shouldBe Some(JsObject("n" -> 3.toJson))
         checkConductorLogsAndAnnotations(nestedActivation, 5)
       }
+    }
+  }
+
+  it should "abort if composition is too long" in withAssetCleaner(wskprops) { (wp, assetHelper) =>
+    val conductor = "conductor" // conductor action
+    assetHelper.withCleaner(wsk.action, conductor) { (action, _) =>
+      action.create(
+        conductor,
+        Some(TestUtils.getTestActionFilename("conductor.js")),
+        annotations = Map("conductor" -> true.toJson))
+    }
+
+    val step = "step" // step action
+    assetHelper.withCleaner(wsk.action, step) { (action, _) =>
+      action.create(step, Some(TestUtils.getTestActionFilename("step.js")))
+    }
+
+    // stay just below limit
+    var params = Map[String, JsValue]()
+    for (i <- 1 to limit) {
+      params = Map("action" -> step.toJson, "state" -> JsObject(params))
+    }
+    val run = wsk.action.invoke(conductor, params + ("n" -> 0.toJson))
+    withActivation(wsk.activation, run) { activation =>
+      activation.response.status shouldBe "success"
+      activation.response.result shouldBe Some(JsObject("n" -> limit.toJson))
+    }
+
+    // add one extra step
+    params = Map("action" -> step.toJson, "state" -> JsObject(params))
+    val longrun = wsk.action.invoke(conductor, params + ("n" -> 0.toJson))
+    withActivation(wsk.activation, longrun) { activation =>
+      activation.response.status shouldBe "application error"
+      activation.response.result.get.fields.get("error") shouldBe Some(JsString(compositionIsTooLong))
     }
   }
 
