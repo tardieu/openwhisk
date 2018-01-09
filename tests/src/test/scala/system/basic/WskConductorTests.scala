@@ -108,6 +108,16 @@ abstract class WskConductorTests extends TestHelpers with WskTestHelpers with Js
       checkConductorLogsAndAnnotations(activation, 3) // conductor, step, conductor
     }
 
+    // dynamically invoke step action, blocking invocation
+    val blockingrun = wsk.action.invoke(conductor, Map("action" -> step.toJson, "n" -> 1.toJson), blocking = true)
+    val activation = wsk.parseJsonString(blockingrun.stdout).convertTo[ActivationResult]
+
+    withClue(s"check failed for blocking conductor activation: $activation") {
+      activation.response.status shouldBe "success"
+      activation.response.result shouldBe Some(JsObject("n" -> 2.toJson))
+      checkConductorLogsAndAnnotations(activation, 3) // conductor, step, conductor
+    }
+
     // dynamically invoke step action, forwarding state
     val secondrun = wsk.action.invoke(
       conductor,
@@ -157,6 +167,33 @@ abstract class WskConductorTests extends TestHelpers with WskTestHelpers with Js
         "params" -> JsObject("action" -> step.toJson), // invoke step (level 1)
         "n" -> 1.toJson))
     withActivation(wsk.activation, run) { activation =>
+      activation.response.status shouldBe "success"
+      activation.response.result shouldBe Some(JsObject("n" -> 2.toJson))
+      checkConductorLogsAndAnnotations(activation, 3) // conductor, nested conductor, conductor
+      // check nested conductor invocation
+      withActivation(
+        wsk.activation,
+        activation.logs.get(1),
+        initialWait = 1 second,
+        pollPeriod = 60 seconds,
+        totalWait = allowedActionDuration) { nestedActivation =>
+        nestedActivation.response.status shouldBe "success"
+        nestedActivation.response.result shouldBe Some(JsObject("n" -> 2.toJson))
+        checkConductorLogsAndAnnotations(nestedActivation, 3) // conductor, step, conductor
+      }
+    }
+
+    // invoke nested conductor with single step, blocking invocation
+    val blockingrun = wsk.action.invoke(
+      conductor,
+      Map(
+        "action" -> conductor.toJson, // invoke nested conductor
+        "params" -> JsObject("action" -> step.toJson), // invoke step (level 1)
+        "n" -> 1.toJson),
+      blocking = true)
+    val activation = wsk.parseJsonString(blockingrun.stdout).convertTo[ActivationResult]
+
+    withClue(s"check failed for blocking conductor activation: $activation") {
       activation.response.status shouldBe "success"
       activation.response.result shouldBe Some(JsObject("n" -> 2.toJson))
       checkConductorLogsAndAnnotations(activation, 3) // conductor, nested conductor, conductor

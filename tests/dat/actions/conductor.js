@@ -2,7 +2,8 @@
  * Minimal conductor action.
  */
 function main(args) {
-    // wrap toplevel params
+    // unescape params
+    // { action, state, foo, params: { bar } } becomes { action, state, params: { foo, bar } }
     const action = args.action
     const state = args.state
     const params = args.params
