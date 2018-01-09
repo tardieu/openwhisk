@@ -84,6 +84,23 @@ abstract class WskConductorTests extends TestHelpers with WskTestHelpers with Js
       activation.response.result shouldBe Some(JsObject("payload" -> testString.toJson))
       checkConductorLogsAndAnnotations(activation, 1) // echo
     }
+
+    // an invalid action name
+    val invalidrun =
+      wsk.action.invoke(echo, Map("payload" -> testString.toJson, "action" -> "invalid#action#name".toJson))
+    withActivation(wsk.activation, invalidrun) { activation =>
+      activation.response.status shouldBe "application error"
+      activation.response.result.toString should include("failed to parse next action")
+      checkConductorLogsAndAnnotations(activation, 1) // echo
+    }
+
+    // an undefined action
+    val undefinedrun = wsk.action.invoke(echo, Map("payload" -> testString.toJson, "action" -> "undefined".toJson))
+    withActivation(wsk.activation, undefinedrun) { activation =>
+      activation.response.status shouldBe "application error"
+      activation.response.result.toString should include("failed to resolve next action")
+      checkConductorLogsAndAnnotations(activation, 1) // echo
+    }
   }
 
   it should "invoke a conductor action with dynamic steps" in withAssetCleaner(wskprops) { (wp, assetHelper) =>
