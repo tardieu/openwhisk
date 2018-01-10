@@ -264,7 +264,8 @@ abstract class WskConductorTests extends TestHelpers with WskTestHelpers with Js
     }
   }
 
-  it should "abort if composition is too long" in withAssetCleaner(wskprops) { (wp, assetHelper) =>
+  // tests fail due to throttling
+  ignore should "abort if composition is too long" in withAssetCleaner(wskprops) { (wp, assetHelper) =>
     val conductor = "conductor" // conductor action
     assetHelper.withCleaner(wsk.action, conductor) { (action, _) =>
       action.create(
