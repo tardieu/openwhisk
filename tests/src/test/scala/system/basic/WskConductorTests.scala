@@ -133,6 +133,14 @@ abstract class WskConductorTests extends TestHelpers with WskTestHelpers with Js
       checkConductorLogsAndAnnotations(activation, 3) // conductor, step, conductor
     }
 
+    // dynamically invoke step action with an error result
+    val errorrun = wsk.action.invoke(conductor, Map("action" -> step.toJson))
+    withActivation(wsk.activation, errorrun) { activation =>
+      activation.response.status shouldBe "application error"
+      activation.response.result shouldBe Some(JsObject("error" -> JsString("missing parameter")))
+      checkConductorLogsAndAnnotations(activation, 3) // conductor, step, conductor
+    }
+
     // dynamically invoke step action, blocking invocation
     val blockingrun = wsk.action.invoke(conductor, Map("action" -> step.toJson, "n" -> 1.toJson), blocking = true)
     val activation = wsk.parseJsonString(blockingrun.stdout).convertTo[ActivationResult]
@@ -222,17 +230,6 @@ abstract class WskConductorTests extends TestHelpers with WskTestHelpers with Js
       activation.response.status shouldBe "success"
       activation.response.result shouldBe Some(JsObject("n" -> 2.toJson))
       checkConductorLogsAndAnnotations(activation, 3) // conductor, nested conductor, conductor
-      // check nested conductor invocation
-      withActivation(
-        wsk.activation,
-        activation.logs.get(1),
-        initialWait = 1 second,
-        pollPeriod = 60 seconds,
-        totalWait = allowedActionDuration) { nestedActivation =>
-        nestedActivation.response.status shouldBe "success"
-        nestedActivation.response.result shouldBe Some(JsObject("n" -> 2.toJson))
-        checkConductorLogsAndAnnotations(nestedActivation, 3) // conductor, step, conductor
-      }
     }
 
     // nested step followed by outer step
@@ -247,17 +244,6 @@ abstract class WskConductorTests extends TestHelpers with WskTestHelpers with Js
       activation.response.status shouldBe "success"
       activation.response.result shouldBe Some(JsObject("n" -> 3.toJson))
       checkConductorLogsAndAnnotations(activation, 5)
-      // check nested conductor invocation
-      withActivation(
-        wsk.activation,
-        activation.logs.get(1),
-        initialWait = 1 second,
-        pollPeriod = 60 seconds,
-        totalWait = allowedActionDuration) { nestedActivation =>
-        nestedActivation.response.status shouldBe "success"
-        nestedActivation.response.result shouldBe Some(JsObject("n" -> 2.toJson))
-        checkConductorLogsAndAnnotations(nestedActivation, 3)
-      }
     }
 
     // two levels of nesting, three steps
@@ -275,17 +261,6 @@ abstract class WskConductorTests extends TestHelpers with WskTestHelpers with Js
       activation.response.status shouldBe "success"
       activation.response.result shouldBe Some(JsObject("n" -> 4.toJson))
       checkConductorLogsAndAnnotations(activation, 5)
-      // check nested conductor invocation
-      withActivation(
-        wsk.activation,
-        activation.logs.get(1),
-        initialWait = 1 second,
-        pollPeriod = 60 seconds,
-        totalWait = allowedActionDuration) { nestedActivation =>
-        nestedActivation.response.status shouldBe "success"
-        nestedActivation.response.result shouldBe Some(JsObject("n" -> 3.toJson))
-        checkConductorLogsAndAnnotations(nestedActivation, 5)
-      }
     }
   }
 
@@ -339,6 +314,27 @@ abstract class WskConductorTests extends TestHelpers with WskTestHelpers with Js
           "params" -> JsObject("action" -> step.toJson, "state" -> JsObject(params)),
           "n" -> 0.toJson))
     withActivation(wsk.activation, nestedlongrun) { activation =>
+      activation.response.status shouldBe "application error"
+      activation.response.result.get.fields.get("error") shouldBe Some(JsString(compositionIsTooLong))
+    }
+
+    params = Map[String, JsValue]()
+    for (i <- 1 to limit) {
+      params = Map("action" -> conductor.toJson, "params" -> JsObject(params))
+    }
+
+    // recursing at the limit should be ok
+    val recursiverun =
+      wsk.action.invoke(conductor, params + ("n" -> 0.toJson))
+    withActivation(wsk.activation, recursiverun) { activation =>
+      activation.response.status shouldBe "success"
+      activation.response.result shouldBe Some(JsObject("n" -> 0.toJson))
+    }
+
+    // recursing beyond the limit should fail
+    val longrecursiverun =
+      wsk.action.invoke(conductor, Map("action" -> conductor.toJson, "params" -> JsObject(params), "n" -> 0.toJson))
+    withActivation(wsk.activation, longrecursiverun) { activation =>
       activation.response.status shouldBe "application error"
       activation.response.result.get.fields.get("error") shouldBe Some(JsString(compositionIsTooLong))
     }
