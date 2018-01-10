@@ -43,6 +43,8 @@ import whisk.common.TransactionId
 import whisk.core.connector.ActivationMessage
 import whisk.core.controller.WhiskServices
 import whisk.core.database.NoDocumentException
+import whisk.core.entitlement._
+import whisk.core.entitlement.Resource
 import whisk.core.entity._
 import whisk.core.entity.size.SizeInt
 import whisk.core.entity.types.ActivationStore
@@ -282,70 +284,86 @@ protected[actions] trait PrimitiveActions {
                   val fqn = (if (next.defaultPackage) EntityPath.DEFAULT.addPath(next) else next)
                     .resolveNamespace(user.namespace)
                     .toFullyQualifiedEntityName
-                  WhiskActionMetaData.resolveActionAndMergeParameters(entityStore, fqn).onComplete {
+                  val resource = Resource(fqn.path, Collection(Collection.ACTIONS), Some(fqn.name.asString))
+                  entitlementProvider.check(user, Privilege.ACTIVATE, resource).onComplete {
                     case Failure(t) =>
-                      // resolution failure
                       val response =
-                        ActivationResponse.applicationError(componentIsMissing(next.toString))
+                        ActivationResponse.applicationError(componentIsNotAccessible(next.toString))
                       completeAppActivation(user, session, response)
-                    case Success(next) =>
-                      if (session.accounting.components >= actionSequenceLimit) {
-                        // composition is too long
-                        val response = ActivationResponse.applicationError(compositionIsTooLong)
-                        completeAppActivation(user, session, response)
-                      } else {
-                        // successful resolution
-                        val exec = next.toExecutableWhiskAction
-                        if (next.annotations.get("conductor").isDefined && exec.isDefined) {
-                          // invoke nested app
-                          invokeConductor(user, exec.head, params, None, Some(session.activationId), Some(session))
-                        } else {
-                          session.accounting.components += 1
-                          exec
-                            .map { exec =>
-                              invokeSimpleAction(
-                                user,
-                                exec,
-                                params,
-                                Some(next.limits.timeout.duration + 1.minute),
-                                Some(session.activationId))
-                            }
-                            .getOrElse {
-                              val SequenceExecMetaData(components) = next.exec
-                              invokeSequence(user, next, components, params, None, Some(session.activationId), false, 0)
-                                .map(r => r._1)
-                            }
-                            .onComplete {
-                              case Failure(t) =>
-                                val response = ActivationResponse.whiskError(conductorActivationFailure)
-                                completeAppActivation(user, session, response)
-                              case Success(Left(activationId)) =>
-                                session.logs += activationId
-                                val response =
-                                  ActivationResponse.whiskError(conductorRetrieveActivationTimeout(activationId))
-                                completeAppActivation(user, session, response)
-                              case Success(Right(activation)) =>
-                                session.logs += activation.activationId
-                                session.duration += activation.duration.getOrElse(
-                                  activation.end.toEpochMilli - activation.start.toEpochMilli)
-                                activation.annotations.get("limits") map { limitsAnnotation =>
-                                  limitsAnnotation.asJsObject.getFields("memory") match {
-                                    case Seq(JsNumber(memory)) =>
-                                      session.maxMemory = Math.max(session.maxMemory, memory.toInt)
-                                  }
+                    case Success(_) =>
+                      WhiskActionMetaData.resolveActionAndMergeParameters(entityStore, fqn).onComplete {
+                        case Failure(t) =>
+                          // resolution failure
+                          val response =
+                            ActivationResponse.applicationError(componentIsMissing(next.toString))
+                          completeAppActivation(user, session, response)
+                        case Success(next) =>
+                          if (session.accounting.components >= actionSequenceLimit) {
+                            // composition is too long
+                            val response = ActivationResponse.applicationError(compositionIsTooLong)
+                            completeAppActivation(user, session, response)
+                          } else {
+                            // successful resolution
+                            val exec = next.toExecutableWhiskAction
+                            if (next.annotations.get("conductor").isDefined && exec.isDefined) {
+                              // invoke nested app
+                              invokeConductor(user, exec.head, params, None, Some(session.activationId), Some(session))
+                            } else {
+                              session.accounting.components += 1
+                              exec
+                                .map { exec =>
+                                  invokeSimpleAction(
+                                    user,
+                                    exec,
+                                    params,
+                                    Some(next.limits.timeout.duration + 1.minute),
+                                    Some(session.activationId))
                                 }
+                                .getOrElse {
+                                  val SequenceExecMetaData(components) = next.exec
+                                  invokeSequence(
+                                    user,
+                                    next,
+                                    components,
+                                    params,
+                                    None,
+                                    Some(session.activationId),
+                                    false,
+                                    0)
+                                    .map(r => r._1)
+                                }
+                                .onComplete {
+                                  case Failure(t) =>
+                                    val response = ActivationResponse.whiskError(conductorActivationFailure)
+                                    completeAppActivation(user, session, response)
+                                  case Success(Left(activationId)) =>
+                                    session.logs += activationId
+                                    val response =
+                                      ActivationResponse.whiskError(conductorRetrieveActivationTimeout(activationId))
+                                    completeAppActivation(user, session, response)
+                                  case Success(Right(activation)) =>
+                                    session.logs += activation.activationId
+                                    session.duration += activation.duration.getOrElse(
+                                      activation.end.toEpochMilli - activation.start.toEpochMilli)
+                                    activation.annotations.get("limits") map { limitsAnnotation =>
+                                      limitsAnnotation.asJsObject.getFields("memory") match {
+                                        case Seq(JsNumber(memory)) =>
+                                          session.maxMemory = Math.max(session.maxMemory, memory.toInt)
+                                      }
+                                    }
 
-                                // resume on activation result
-                                invokeConductor(
-                                  user,
-                                  action,
-                                  Some(activation.resultAsJson),
-                                  None,
-                                  Some(session.activationId),
-                                  None, // resuming
-                                  Some(session))
+                                    // resume on activation result
+                                    invokeConductor(
+                                      user,
+                                      action,
+                                      Some(activation.resultAsJson),
+                                      None,
+                                      Some(session.activationId),
+                                      None, // resuming
+                                      Some(session))
+                                }
                             }
-                        }
+                          }
                       }
                   }
               }

@@ -123,6 +123,7 @@ object Messages {
     s"Timeout reached when retrieving activation $id for composition component."
   def componentIsInvalid(value: JsValue) = s"Failed to parse action name from json value $value."
   def componentIsMissing(name: String) = s"Failed to resolve action with name '$name'."
+  def componentIsNotAccessible(name: String) = s"Failed entitlement check for action with name '$name'."
 
   /** Error messages for bad requests where parameters do not conform. */
   val parametersNotAllowed = "Request defines parameters that are not allowed (e.g., reserved properties)."
