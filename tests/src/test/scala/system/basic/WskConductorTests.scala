@@ -315,9 +315,30 @@ abstract class WskConductorTests extends TestHelpers with WskTestHelpers with Js
     }
 
     // add one extra step
-    params = Map("action" -> step.toJson, "state" -> JsObject(params))
-    val longrun = wsk.action.invoke(conductor, params + ("n" -> 0.toJson))
+    val longrun =
+      wsk.action.invoke(conductor, Map("action" -> step.toJson, "state" -> JsObject(params), "n" -> 0.toJson))
     withActivation(wsk.activation, longrun) { activation =>
+      activation.response.status shouldBe "application error"
+      activation.response.result.get.fields.get("error") shouldBe Some(JsString(compositionIsTooLong))
+    }
+
+    // nesting a composition at the limit should be ok
+    val nestedrun =
+      wsk.action.invoke(conductor, Map("action" -> conductor.toJson, "params" -> JsObject(params), "n" -> 0.toJson))
+    withActivation(wsk.activation, nestedrun) { activation =>
+      activation.response.status shouldBe "success"
+      activation.response.result shouldBe Some(JsObject("n" -> limit.toJson))
+    }
+
+    // nesting a composition beyond the limit should fail
+    val nestedlongrun =
+      wsk.action.invoke(
+        conductor,
+        Map(
+          "action" -> conductor.toJson,
+          "params" -> JsObject("action" -> step.toJson, "state" -> JsObject(params)),
+          "n" -> 0.toJson))
+    withActivation(wsk.activation, nestedlongrun) { activation =>
       activation.response.status shouldBe "application error"
       activation.response.result.get.fields.get("error") shouldBe Some(JsString(compositionIsTooLong))
     }

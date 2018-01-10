@@ -204,7 +204,7 @@ protected[actions] trait PrimitiveActions {
         duration = 0,
         maxMemory = action.limits.memory.megabytes,
         state = None,
-        steps = 0,
+        steps = caller.map { _.steps }.getOrElse(1), // one step minimum
         logs = Buffer.empty,
         caller,
         result = waitForResponse.map { _ =>
@@ -212,7 +212,8 @@ protected[actions] trait PrimitiveActions {
         }) // placeholder for result if blocking invoke
     }
 
-    if (session.steps > 2 * actionSequenceLimit) {
+    if (session.steps > actionSequenceLimit) {
+      // composition is too long
       val response = ActivationResponse.applicationError(compositionIsTooLong)
       completeAppActivation(user, session, response)
     } else {
@@ -246,7 +247,6 @@ protected[actions] trait PrimitiveActions {
           // successful invocation
           session.logs += activation.activationId
           session.duration += activation.duration.getOrElse(activation.end.toEpochMilli - activation.start.toEpochMilli)
-          session.steps += 1
 
           val result = activation.resultAsJson
 
@@ -284,6 +284,7 @@ protected[actions] trait PrimitiveActions {
                         ActivationResponse.applicationError(componentIsMissing(next.toString))
                       completeAppActivation(user, session, response)
                     case Success(next) =>
+                      if (resuming.isDefined) session.steps += 1 // starting step has already been counted
                       // successful resolution
                       val exec = next.toExecutableWhiskAction
                       if (next.annotations.get("conductor").isDefined && exec.isDefined) {
@@ -323,7 +324,6 @@ protected[actions] trait PrimitiveActions {
                                     session.maxMemory = Math.max(session.maxMemory, memory.toInt)
                                 }
                               }
-                              session.steps += 1
 
                               // resume on activation result
                               invokeConductor(
@@ -415,7 +415,7 @@ protected[actions] trait PrimitiveActions {
       caller.logs += session.activationId
       caller.duration += session.duration
       caller.maxMemory = Math.max(caller.maxMemory, session.maxMemory)
-      caller.steps += session.steps
+      caller.steps = session.steps
       invokeConductor(
         user,
         caller.action,
