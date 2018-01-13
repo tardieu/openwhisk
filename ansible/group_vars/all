@@ -18,6 +18,8 @@ exclude_logs_from: []
 #   whisk_api_localhost_name_default (last)
 whisk_api_localhost_name_default: "localhost"
 
+hosts_dir: "{{ inventory_dir| default(env_hosts_dir) }}" 
+
 whisk:
   version:
     date: "{{ansible_date_time.iso8601}}"
@@ -60,6 +62,9 @@ controller:
   # We recommend to enable HA for the controllers only, if bookkeeping data are shared too. (localBookkeeping: false)
   ha: "{{ controller_enable_ha | default(True) and groups['controllers'] | length > 1 }}"
   loglevel: "{{ controller_loglevel | default(whisk_loglevel) | default('INFO') }}"
+
+transactions:
+  stride: "{{ groups['controllers'] | length }}"
 
 registry:
   confdir: "{{ config_root_dir }}/registry"

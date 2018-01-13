@@ -141,7 +141,11 @@ object Messages {
   def entityTooBig(error: SizeError) = {
     s"${error.field} larger than allowed: ${error.is.toBytes} > ${error.allowed.toBytes} bytes."
   }
-  def maxActivationLimitExceeded(value: Int, max: Int) = s"Activation limit of $value exceeds maximum limit of $max."
+
+  def maxListLimitExceeded(collection: String, value: Int, max: Int) = {
+    s"The value $value exceeds the allowed limit $max for $collection."
+  }
+  def listLimitIsNotAString = s"The API expects the 'limit' value to be an integer but the given value is not."
 
   def truncateLogs(limit: ByteSize) = {
     s"Logs were truncated because the total bytes size exceeds the limit of ${limit.toBytes} bytes."
@@ -196,6 +200,12 @@ object Messages {
   val actionRemovedWhileInvoking = "Action could not be found or may have been deleted."
   val actionMismatchWhileInvoking = "Action version is not compatible and cannot be invoked."
   val actionFetchErrorWhileInvoking = "Action could not be fetched."
+
+  /** Indicates that the image could not be pulled. */
+  def imagePullError(image: String) = s"Failed to pull container image '$image'."
+
+  /** Indicates that the container for the action could not be started. */
+  val resourceProvisionError = "Failed to provision resources to run the action."
 }
 
 /** Replaces rejections with Json object containing cause and transaction id. */

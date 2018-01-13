@@ -61,7 +61,7 @@ case class WarmedData(container: Container,
 
 // Events received by the actor
 case class Start(exec: CodeExec[_], memoryLimit: ByteSize)
-case class Run(action: ExecutableWhiskAction, msg: ActivationMessage)
+case class Run(action: ExecutableWhiskAction, msg: ActivationMessage, retryLogDeadline: Option[Deadline] = None)
 case object Remove
 
 // Events sent by the actor
@@ -148,7 +148,7 @@ class ContainerProxy(
             val response = t match {
               case WhiskContainerStartupError(msg) => ActivationResponse.whiskError(msg)
               case BlackboxStartupError(msg)       => ActivationResponse.applicationError(msg)
-              case _                               => ActivationResponse.whiskError(t.getMessage)
+              case _                               => ActivationResponse.whiskError(Messages.resourceProvisionError)
             }
             // construct an appropriate activation and record it in the datastore,
             // also update the feed and active ack; the container cleanup is queued

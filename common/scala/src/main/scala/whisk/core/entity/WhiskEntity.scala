@@ -41,7 +41,7 @@ import whisk.http.Messages
  * @throws IllegalArgumentException if any argument is undefined
  */
 @throws[IllegalArgumentException]
-abstract class WhiskEntity protected[entity] (en: EntityName) extends WhiskDocument {
+abstract class WhiskEntity protected[entity] (en: EntityName, val entityType: String) extends WhiskDocument {
 
   val namespace: EntityPath
   val name = en
@@ -64,7 +64,10 @@ abstract class WhiskEntity protected[entity] (en: EntityName) extends WhiskDocum
    * Returns a JSON object with the fields specific to this abstract class.
    */
   protected def entityDocumentRecord: JsObject =
-    JsObject("name" -> JsString(name.toString), "updated" -> JsNumber(updated.toEpochMilli()))
+    JsObject(
+      "name" -> JsString(name.toString),
+      "updated" -> JsNumber(updated.toEpochMilli()),
+      "entityType" -> JsString(entityType))
 
   override def toDocumentRecord: JsObject = {
     val extraFields = entityDocumentRecord.fields
@@ -81,15 +84,22 @@ abstract class WhiskEntity protected[entity] (en: EntityName) extends WhiskDocum
 
   /**
    * A JSON view of the entity, that should match the result returned in a list operation.
-   * This should be synchronized with the views computed in wipeTransientDBs.sh.
+   * This should be synchronized with the views computed in the databse.
+   * Strictly used in view testing to enforce alignment.
    */
-  def summaryAsJson =
-    JsObject(
+  def summaryAsJson = {
+    import WhiskActivation.instantSerdes
+    val base = Map(
       "namespace" -> namespace.toJson,
       "name" -> name.toJson,
       "version" -> version.toJson,
       WhiskEntity.sharedFieldName -> JsBoolean(publish),
-      "annotations" -> annotations.toJsArray)
+      "annotations" -> annotations.toJsArray,
+      "updated" -> updated.toJson)
+    if (WhiskEntityQueries.designDoc.endsWith("v2")) {
+      JsObject(base - "updated")
+    } else JsObject(base)
+  }
 }
 
 object WhiskEntity {

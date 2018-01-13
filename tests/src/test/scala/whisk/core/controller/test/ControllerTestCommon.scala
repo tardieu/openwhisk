@@ -60,7 +60,6 @@ protected trait ControllerTestCommon
 
   override val instanceOrdinal = 0
   override val instance = InstanceId(instanceOrdinal)
-  override val numberOfInstances = 1
   val activeAckTopicIndex = InstanceId(instanceOrdinal)
 
   implicit val routeTestTimeout = RouteTestTimeout(90 seconds)
@@ -165,7 +164,8 @@ protected trait ControllerTestCommon
                                  version: SemVer = SemVer(),
                                  publish: Boolean = false,
                                  annotations: Parameters = Parameters())
-      extends WhiskEntity(name) {
+      extends WhiskEntity(name, "badEntity") {
+
     override def toJson = BadEntity.serdes.write(this).asJsObject
   }
 
