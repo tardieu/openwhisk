@@ -302,7 +302,7 @@ protected[actions] trait PrimitiveActions {
                     .resolveNamespace(user.namespace)
                     .toFullyQualifiedEntityName
                   val resource = Resource(fqn.path, Collection(Collection.ACTIONS), Some(fqn.name.asString))
-                  entitlementProvider.check(user, Privilege.ACTIVATE, resource).onComplete {
+                  entitlementProvider.check(user, Privilege.ACTIVATE, Set(resource), noThrottle = true).onComplete {
                     case Failure(t) =>
                       // failed entitlement check
                       val response = ActivationResponse.applicationError(componentIsNotAccessible(next.toString))
