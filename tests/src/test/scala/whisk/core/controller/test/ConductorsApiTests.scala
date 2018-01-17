@@ -21,16 +21,14 @@ import java.time.Instant
 
 import scala.collection.mutable
 import scala.concurrent.duration.{DurationInt, FiniteDuration}
-import scala.concurrent.{Await, Future}
+import scala.concurrent.Future
 import scala.concurrent.ExecutionContext
-import scala.language.postfixOps
 import scala.util.{Failure, Success, Try}
 
 import org.junit.runner.RunWith
 import org.scalatest.junit.JUnitRunner
 
 import akka.http.scaladsl.model.StatusCodes._
-import akka.http.scaladsl.marshallers.sprayjson.SprayJsonSupport.sprayJsonMarshaller
 import akka.http.scaladsl.marshallers.sprayjson.SprayJsonSupport.sprayJsonUnmarshaller
 import akka.http.scaladsl.server.Route
 
@@ -42,11 +40,6 @@ import whisk.core.WhiskConfig
 import whisk.core.connector.ActivationMessage
 import whisk.core.controller.WhiskActionsApi
 import whisk.core.entity._
-import whisk.core.entity.size._
-import whisk.core.entitlement.Collection
-import whisk.core.loadBalancer.LoadBalancer
-import whisk.http.ErrorResponse
-import whisk.http.Messages
 
 /**
  * Tests Conductor Actions API.
