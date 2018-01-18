@@ -70,6 +70,7 @@ class ConductorsApiTests extends ControllerTestCommon with WhiskActionsApi {
   val limit = whiskConfig.actionSequenceLimit.toInt
 
   override val loadBalancer = new FakeLoadBalancerService(whiskConfig)
+  override val activationIdFactory = new ActivationId.ActivationIdGenerator() {}
 
   it should "invoke a conductor action with no dynamic steps" in {
     implicit val tid = transid()
@@ -319,9 +320,7 @@ class ConductorsApiTests extends ControllerTestCommon with WhiskActionsApi {
   class FakeLoadBalancerService(config: WhiskConfig)(implicit ec: ExecutionContext)
       extends DegenerateLoadBalancerService(config) {
 
-    private val activationIdFactory = new ActivationId.ActivationIdGenerator() {}
-
-    private def respond(action: ExecutableWhiskActionMetaData, subject: Subject, result: JsObject) = {
+    private def respond(action: ExecutableWhiskActionMetaData, msg: ActivationMessage, result: JsObject) = {
       val response =
         if (result.fields.get("error") isDefined) ActivationResponse(ActivationResponse.ApplicationError, Some(result))
         else ActivationResponse.success(Some(result))
@@ -329,8 +328,8 @@ class ConductorsApiTests extends ControllerTestCommon with WhiskActionsApi {
       WhiskActivation(
         action.namespace,
         action.name,
-        subject,
-        activationIdFactory.make(),
+        msg.user.subject,
+        msg.activationId,
         start,
         end = start.plusMillis(duration),
         response = response)
@@ -342,7 +341,7 @@ class ConductorsApiTests extends ControllerTestCommon with WhiskActionsApi {
         Future.successful {
           action.name match {
             case `echo` => // echo action
-              Future(Right(respond(action, msg.user.subject, args)))
+              Future(Right(respond(action, msg, args)))
             case `conductor` => // see tests/dat/actions/conductor.js
               val result =
                 if (args.fields.get("error") isDefined) args
@@ -358,14 +357,14 @@ class ConductorsApiTests extends ControllerTestCommon with WhiskActionsApi {
                   val params = Map("params" -> JsObject(wrappedParams ++ escapedParams))
                   JsObject(params ++ action ++ state)
                 }
-              Future(Right(respond(action, msg.user.subject, result)))
+              Future(Right(respond(action, msg, result)))
             case `step` => // see tests/dat/actions/step.js
               val result = args.fields.get("n") map { n =>
                 JsObject("n" -> (n.convertTo[BigDecimal] + 1).toJson)
               } getOrElse {
                 JsObject("error" -> "missing parameter".toJson)
               }
-              Future(Right(respond(action, msg.user.subject, result)))
+              Future(Right(respond(action, msg, result)))
             case _ =>
               Future.failed(new IllegalArgumentException("Unkown action invoked in conductor test"))
           }
