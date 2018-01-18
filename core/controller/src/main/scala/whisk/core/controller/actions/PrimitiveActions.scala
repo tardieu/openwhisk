@@ -87,7 +87,26 @@ protected[actions] trait PrimitiveActions {
     topmost: Boolean,
     atomicActionsCount: Int)(implicit transid: TransactionId): Future[(Either[ActivationId, WhiskActivation], Int)]
 
-  /** A method that knows how to invoke a single primitive action or a composition. */
+  /**
+   * A method that knows how to invoke a single primitive action or a composition.
+   *
+   * A composition is a kind of sequence of actions that is dynamically computed.
+   * The execution of a composition is triggered by the invocation of a conductor action.
+   * A conductor action is an executable action with a defined "conductor" annotation (the value does not matter).
+   * Sequences cannot be compositions: the "conductor" annotation on a sequence has no effect.
+   *
+   * A conductor action may either return a final result or a triplet { action, params, state }.
+   * In the latter case, the specified component action is invoked on the specified params object.
+   * Upon completion of this action the conductor action is reinvoked with a payload that combines
+   * the output of the action with the state returned by the previous conductor invocation.
+   * The composition result is the result of the final conductor invocation in the chain of invocations.
+   *
+   * The trace of a composition obeys the grammar: conductorInvocation(componentInvocation conductorInvocation)*
+   *
+   * The activation records for a composition and its components mimic the activation records of sequences.
+   * They include the same "topmost", "kind", and "causedBy" annotations with the same semantics.
+   * The activation record for a composition also includes a specific annotation "conductor" with value true.
+   */
   protected[actions] def invokeSingleAction(
     user: Identity,
     action: ExecutableWhiskActionMetaData,
@@ -95,7 +114,7 @@ protected[actions] trait PrimitiveActions {
     waitForResponse: Option[FiniteDuration],
     cause: Option[ActivationId])(implicit transid: TransactionId): Future[Either[ActivationId, WhiskActivation]] = {
 
-    if (action.annotations.get("conductor").isDefined) {
+    if (action.annotations.get(WhiskActivation.conductorAnnotation).isDefined) {
       invokeComposition(user, action, payload, waitForResponse, cause)
     } else {
       invokeSimpleAction(user, action, payload, waitForResponse, cause)
@@ -180,10 +199,45 @@ protected[actions] trait PrimitiveActions {
     }
   }
 
-  // Global accounting of conductor invocations and component invocations (shared by callers and callees)
-  private case class SessionAccounting(var components: Int = 0, var conductors: Int = 0)
+  /**
+   * Mutable cumulative accounting of what happened during the execution of a composition.
+   *
+   * Compositions are aborted if the number of action invocations exceeds a limit.
+   * The permitted max is n component invocations plus 2n+1 conductor invocations (where n is the actionSequenceLimit).
+   * The max is chosen to permit a sequence with up to n primitive actions.
+   *
+   * NOTE:
+   * A sequence invocation counts as one invocation irrespective of the number of action invocations in the sequence.
+   * If one component of a composition is also a composition, the caller and callee share the same accounting object.
+   * The counts are shared between callers and callees so the limit applies globally.
+   *
+   * @param components the current count of component actions already invoked
+   * @param conductors the current count of conductor actions already invoked
+   */
+  private case class CompositionAccounting(var components: Int = 0, var conductors: Int = 0)
 
-  // Session state (not shared by callers and callees, except for accounting)
+  /**
+   * A mutable session object to keep track of the execution of one composition.
+   *
+   * NOTE:
+   * The session object is not shared between callers and callees.
+   * A caller has a reference to the session object for the callee.
+   * This permits the callee to return to the caller when done.
+   *
+   * @param activationId the activationId for the composition (ie the activation record for the composition)
+   * @param start the start time for the composition
+   * @param action the conductor action responsible for the execution of the composition
+   * @param cause the cause of the composition (activationId of the enclosing sequence or composition if any)
+   * @param duration the "user" time so far executing the composition (sum of durations for
+   *        all actions invoked so far which is different from the total time spent executing the composition)
+   * @param maxMemory the maximum memory annotation observed so far for the conductor action and components
+   * @param state the json state object to inject in the parameter object of the next conductor invocation
+   * @param accounting the global accounting object used to abort compositions requiring too many action invocations
+   * @param logs a mutable buffer that is appended with new activation ids as the composition unfolds
+   *             (in contrast with sequences, the logs of a hierarchy of compositions is not flattened)
+   * @param caller the session object for the parent composition (caller) if any
+   * @param result a placeholder for returning the result of the composition invocation (a blocking invocation only)
+   */
   private case class Session(activationId: ActivationId,
                              start: Instant,
                              action: ExecutableWhiskActionMetaData,
@@ -191,12 +245,29 @@ protected[actions] trait PrimitiveActions {
                              var duration: Long,
                              var maxMemory: Int,
                              var state: Option[JsObject],
-                             accounting: SessionAccounting,
+                             accounting: CompositionAccounting,
                              logs: Buffer[ActivationId],
                              caller: Option[Session],
                              result: Option[Promise[Either[ActivationId, WhiskActivation]]])
 
-  // invoke a composition and wait for response if blocking
+  /**
+   * A method that knows how to invoke a composition.
+   *
+   * The method instantiates the session object for the composition, invokes the conductor action for the composition,
+   * and waits for the composition result (resulting activation) if the invocation is blocking (up to timeout).
+   *
+   * @param user the identity invoking the action
+   * @param action the conductor action to invoke for the composition
+   * @param payload the dynamic arguments for the activation
+   * @param waitForResponse if not empty, wait upto specified duration for a response (this is used for blocking activations)
+   * @param cause the activation id that is responsible for this invoke/activation
+   * @param caller the session object for the caller if any
+   * @param transid a transaction id for logging
+   * @return a promise that completes with one of the following successful cases:
+   *            Right(WhiskActivation) if waiting for a response and response is ready within allowed duration,
+   *            Left(ActivationId) if not waiting for a response, or allowed duration has elapsed without a result ready
+   *         or an error
+   */
   private def invokeComposition(
     user: Identity,
     action: ExecutableWhiskActionMetaData,
@@ -213,7 +284,7 @@ protected[actions] trait PrimitiveActions {
       duration = 0,
       maxMemory = action.limits.memory.megabytes,
       state = None,
-      accounting = caller.map { _.accounting }.getOrElse(SessionAccounting()), // share accounting with caller
+      accounting = caller.map { _.accounting }.getOrElse(CompositionAccounting()), // share accounting with caller
       logs = Buffer.empty,
       caller,
       result = waitForResponse.map { _ =>
@@ -235,7 +306,19 @@ protected[actions] trait PrimitiveActions {
       }
   }
 
-  // invoke a conductor action and the continuation if any
+  /**
+   * A method that knows how to handle a conductor invocation.
+   *
+   * This method prepares the payload and invokes the conductor action.
+   * It parses the result and extracts the name of the next component action if any.
+   * It either invokes the desired component action or completes the composition invocation.
+   * It also checks the invocation counts against the limits.
+   *
+   * @param user the identity invoking the action
+   * @param payload the dynamic arguments for the activation
+   * @param session the session object for this composition
+   * @param transid a transaction id for logging
+   */
   private def invokeConductor(user: Identity, payload: Option[JsObject], session: Session)(
     implicit transid: TransactionId) = {
 
@@ -244,7 +327,7 @@ protected[actions] trait PrimitiveActions {
       val response = ActivationResponse.applicationError(compositionIsTooLong)
       completeAppActivation(user, session, response)
     } else {
-      // add state to payload
+      // inject state into payload if any
       val params = session.state
         .map { state =>
           Some(JsObject(payload.getOrElse(JsObject()).fields ++ state.fields))
@@ -279,17 +362,17 @@ protected[actions] trait PrimitiveActions {
           val result = activation.resultAsJson
 
           // extract params from result
-          val params = result.getFields("params").headOption.map { p =>
-            Try(p.asJsObject).getOrElse(JsObject("value" -> p)) // ensure params is a dictionary
+          val params = result.getFields(WhiskActivation.paramsField).headOption.map { p =>
+            Try(p.asJsObject).getOrElse(JsObject(WhiskActivation.valueField -> p)) // ensure params is a dictionary
           }
 
           // update session state
-          session.state = result.getFields("state").headOption.flatMap { p =>
+          session.state = result.getFields(WhiskActivation.stateField).headOption.flatMap { p =>
             Try(Some(p.asJsObject)).getOrElse(None)
           }
 
           // extract next action from result and invoke
-          result.getFields("action").headOption match {
+          result.getFields(WhiskActivation.actionField).headOption match {
             case None =>
               // no next action, end composition execution, return to caller
               val response = ActivationResponse(activation.response.statusCode, Some(params.getOrElse(result)))
@@ -337,7 +420,21 @@ protected[actions] trait PrimitiveActions {
     }
   }
 
-  // invoke component action and continuation
+  /**
+   * A method that knows how to handle a component invocation.
+   *
+   * This method distinguishes primitive actions, sequences, and compositions.
+   * If the component action is a composition, it invokes invokeComposition and returns.
+   * invokeComposition takes care of resuming the execution of this composition, when the nested composition finishes.
+   * If the component action is not a composition, it is invoked followed by the reinvocation of the conductor action.
+   * This method also keeps track of the duration and memory footprint for the composition.
+   *
+   * @param user the identity invoking the action
+   * @param action the component action to invoke
+   * @param payload the dynamic arguments for the activation
+   * @param session the session object for this composition
+   * @param transid a transaction id for logging
+   */
   private def invokeComponent(user: Identity, action: WhiskActionMetaData, payload: Option[JsObject], session: Session)(
     implicit transid: TransactionId) {
 
@@ -398,14 +495,14 @@ protected[actions] trait PrimitiveActions {
 
     // compute max memory
     val sequenceLimits = Parameters(
-      "limits",
+      WhiskActivation.limitsAnnotation,
       ActionLimits(session.action.limits.timeout, MemoryLimit(session.maxMemory MB), session.action.limits.logs).toJson)
 
     // set causedBy if not topmost
     val causedBy = if (session.cause.isDefined) {
-      Parameters("causedBy", JsString("sequence"))
+      Some(Parameters(WhiskActivation.causedByAnnotation, JsString(Exec.SEQUENCE)))
     } else {
-      Parameters()
+      None
     }
 
     val end = Instant.now(Clock.systemUTC())
@@ -423,10 +520,10 @@ protected[actions] trait PrimitiveActions {
       logs = ActivationLogs(session.logs.map(_.asString).toVector),
       version = session.action.version,
       publish = false,
-      annotations = Parameters("topmost", JsBoolean(!session.cause.isDefined)) ++
-        Parameters("path", session.action.fullyQualifiedName(false).toString) ++
-        Parameters("kind", "sequence") ++
-        Parameters("conductor", JsBoolean(true)) ++
+      annotations = Parameters(WhiskActivation.topmostAnnotation, JsBoolean(!session.cause.isDefined)) ++
+        Parameters(WhiskActivation.pathAnnotation, JsString(session.action.fullyQualifiedName(false).asString)) ++
+        Parameters(WhiskActivation.kindAnnotation, JsString(Exec.SEQUENCE)) ++
+        Parameters(WhiskActivation.conductorAnnotation, JsBoolean(true)) ++
         causedBy ++
         sequenceLimits,
       duration = Some(session.duration))
