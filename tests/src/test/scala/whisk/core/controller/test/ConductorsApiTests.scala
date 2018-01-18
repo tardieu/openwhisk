@@ -35,7 +35,7 @@ import whisk.core.WhiskConfig
 import whisk.core.connector.ActivationMessage
 import whisk.core.controller.WhiskActionsApi
 import whisk.core.entity._
-import whisk.http.Messages.{componentIsInvalid, componentIsMissing, compositionIsTooLong}
+import whisk.http.Messages._
 
 /**
  * Tests Conductor Actions API.
@@ -54,14 +54,17 @@ class ConductorsApiTests extends ControllerTestCommon with WhiskActionsApi {
   val namespace = EntityPath(creds.subject.asString)
   val collectionPath = s"/${EntityPath.DEFAULT}/${collection.path}"
 
+  val alternateCreds = WhiskAuthHelpers.newIdentity()
+  val alternateNamespace = EntityPath(alternateCreds.subject.asString)
+
   // test actions
   val echo = MakeName.next("echo")
   val conductor = MakeName.next("conductor")
   val step = MakeName.next("step")
+  val missing = MakeName.next("missingAction") // undefined
+  val invalid = "invalid#Action" // invalid name
 
   val testString = "this is a test"
-  val invalid = "invalid#Action"
-  val missing = "missingAction"
   val duration = 42
 
   val limit = whiskConfig.actionSequenceLimit.toInt
@@ -123,7 +126,7 @@ class ConductorsApiTests extends ControllerTestCommon with WhiskActionsApi {
       val response = responseAs[JsObject]
       response.fields("response").asJsObject.fields("status") shouldBe "application error".toJson
       response.fields("response").asJsObject.fields("result") shouldBe JsObject(
-        "error" -> componentIsMissing(missing).toJson)
+        "error" -> componentIsMissing(missing.toString).toJson)
       response.fields("logs").convertTo[JsArray].elements.size shouldBe 1
     }
   }
@@ -132,6 +135,8 @@ class ConductorsApiTests extends ControllerTestCommon with WhiskActionsApi {
     implicit val tid = transid()
     put(entityStore, WhiskAction(namespace, conductor, jsDefault("??"), annotations = Parameters("conductor", "true")))
     put(entityStore, WhiskAction(namespace, step, jsDefault("??")))
+    put(entityStore, WhiskAction(alternateNamespace, step, jsDefault("??"))) // forbidden action
+    val forbidden = s"$alternateNamespace/$step" // forbidden action name
 
     // dynamically invoke step action
     Post(
@@ -164,6 +169,17 @@ class ConductorsApiTests extends ControllerTestCommon with WhiskActionsApi {
       response.fields("response").asJsObject.fields("result") shouldBe JsObject("n" -> 2.toJson, "witness" -> 42.toJson)
       response.fields("logs").convertTo[JsArray].elements.size shouldBe 3
       response.fields("duration") shouldBe (3 * duration).toJson
+    }
+
+    // dynamically invoke a forbidden action
+    Post(s"$collectionPath/${conductor}?blocking=true", JsObject("action" -> forbidden.toJson)) ~> Route.seal(
+      routes(creds)) ~> check {
+      status should not be (OK)
+      val response = responseAs[JsObject]
+      response.fields("response").asJsObject.fields("status") shouldBe "application error".toJson
+      response.fields("response").asJsObject.fields("result") shouldBe JsObject(
+        "error" -> componentIsNotAccessible(forbidden).toJson)
+      response.fields("logs").convertTo[JsArray].elements.size shouldBe 1
     }
 
     // dynamically invoke step action twice, forwarding state
