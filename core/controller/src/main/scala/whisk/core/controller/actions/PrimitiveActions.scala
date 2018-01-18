@@ -87,7 +87,7 @@ protected[actions] trait PrimitiveActions {
     topmost: Boolean,
     atomicActionsCount: Int)(implicit transid: TransactionId): Future[(Either[ActivationId, WhiskActivation], Int)]
 
-  // invoke a single action or a composition
+  /** A method that knows how to invoke a single primitive action or a composition. */
   protected[actions] def invokeSingleAction(
     user: Identity,
     action: ExecutableWhiskActionMetaData,
@@ -103,17 +103,21 @@ protected[actions] trait PrimitiveActions {
   }
 
   /**
+   * A method that knows how to invoke a single primitive action.
+   *
    * Posts request to the loadbalancer. If the loadbalancer accepts the requests with an activation id,
    * then wait for the result of the activation if necessary.
    *
    * NOTE:
-   * For activations of actions, cause is populated only for actions that were invoked as a result of a sequence activation.
+   * Cause is populated only for actions that were invoked as a result of a sequence activation or a composition.
    * For actions that are enclosed in a sequence and are activated as a result of the sequence activation, the cause
    * contains the activation id of the immediately enclosing sequence.
    * e.g.,: s -> a, x, c    and   x -> c  (x and s are sequences, a, b, c atomic actions)
    * cause for a, x, c is the activation id of s
    * cause for c is the activation id of x
    * cause for s is not defined
+   * For actions that are enclosed in a composition and are activated as a result of the composition activation,
+   * the cause contains the activation id of the immediately enclosing composition.
    *
    * @param user the identity invoking the action
    * @param action the action to invoke
@@ -305,14 +309,16 @@ protected[actions] trait PrimitiveActions {
                   entitlementProvider.check(user, Privilege.ACTIVATE, Set(resource), noThrottle = true).onComplete {
                     case Failure(t) =>
                       // failed entitlement check
-                      val response = ActivationResponse.applicationError(compositionComponentNotAccessible(next.toString))
+                      val response =
+                        ActivationResponse.applicationError(compositionComponentNotAccessible(next.toString))
                       completeAppActivation(user, session, response)
                     case Success(_) =>
                       // successful entitlement check
                       WhiskActionMetaData.resolveActionAndMergeParameters(entityStore, fqn).onComplete {
                         case Failure(t) =>
                           // resolution failure
-                          val response = ActivationResponse.applicationError(compositionComponentNotFound(next.toString))
+                          val response =
+                            ActivationResponse.applicationError(compositionComponentNotFound(next.toString))
                           completeAppActivation(user, session, response)
                         case Success(next) =>
                           if (session.accounting.components >= actionSequenceLimit) {

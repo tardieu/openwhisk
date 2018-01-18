@@ -97,7 +97,8 @@ abstract class WskConductorTests extends TestHelpers with WskTestHelpers with Js
       wsk.action.invoke(echo, Map("payload" -> testString.toJson, "action" -> invalid.toJson))
     withActivation(wsk.activation, invalidrun) { activation =>
       activation.response.status shouldBe "application error"
-      activation.response.result.get.fields.get("error") shouldBe Some(JsString(compositionComponentInvalid(JsString(invalid))))
+      activation.response.result.get.fields.get("error") shouldBe Some(
+        JsString(compositionComponentInvalid(JsString(invalid))))
       checkConductorLogsAndAnnotations(activation, 1) // echo
     }
 
@@ -341,11 +342,11 @@ abstract class WskConductorTests extends TestHelpers with WskTestHelpers with Js
   }
 
   /**
-    * checks logs for the activation of a conductor action (length/size and ids)
-    * checks that the cause field for nested invocations is set properly
-    * checks duration
-    * checks memory
-    */
+   * checks logs for the activation of a conductor action (length/size and ids)
+   * checks that the cause field for nested invocations is set properly
+   * checks duration
+   * checks memory
+   */
   private def checkConductorLogsAndAnnotations(activation: ActivationResult, size: Int) = {
     activation.logs shouldBe defined
     // check that the logs are what they are supposed to be (activation ids)
