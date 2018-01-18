@@ -116,7 +116,7 @@ class ConductorsApiTests extends ControllerTestCommon with WhiskActionsApi {
       val response = responseAs[JsObject]
       response.fields("response").asJsObject.fields("status") shouldBe "application error".toJson
       response.fields("response").asJsObject.fields("result") shouldBe JsObject(
-        "error" -> componentIsInvalid(invalid.toJson).toJson)
+        "error" -> compositionComponentInvalid(invalid.toJson).toJson)
       response.fields("logs").convertTo[JsArray].elements.size shouldBe 1
     }
 
@@ -127,7 +127,7 @@ class ConductorsApiTests extends ControllerTestCommon with WhiskActionsApi {
       val response = responseAs[JsObject]
       response.fields("response").asJsObject.fields("status") shouldBe "application error".toJson
       response.fields("response").asJsObject.fields("result") shouldBe JsObject(
-        "error" -> componentIsMissing(missing.toString).toJson)
+        "error" -> compositionComponentNotFound(missing.toString).toJson)
       response.fields("logs").convertTo[JsArray].elements.size shouldBe 1
     }
   }
@@ -179,7 +179,7 @@ class ConductorsApiTests extends ControllerTestCommon with WhiskActionsApi {
       val response = responseAs[JsObject]
       response.fields("response").asJsObject.fields("status") shouldBe "application error".toJson
       response.fields("response").asJsObject.fields("result") shouldBe JsObject(
-        "error" -> componentIsNotAccessible(forbidden).toJson)
+        "error" -> compositionComponentNotAccessible(forbidden).toJson)
       response.fields("logs").convertTo[JsArray].elements.size shouldBe 1
     }
 

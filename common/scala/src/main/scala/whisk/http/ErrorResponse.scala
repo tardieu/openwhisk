@@ -118,12 +118,15 @@ object Messages {
 
   /** Error messages for compositions. */
   val compositionIsTooLong = "Too many actions in the composition."
-  val conductorActivationFailure = "Composition failed."
-  def conductorRetrieveActivationTimeout(id: ActivationId) =
-    s"Timeout reached when retrieving activation $id for composition component."
-  def componentIsInvalid(value: JsValue) = s"Failed to parse action name from json value $value."
-  def componentIsMissing(name: String) = s"Failed to resolve action with name '$name'."
-  def componentIsNotAccessible(name: String) = s"Failed entitlement check for action with name '$name'."
+  val compositionActivationFailure = "Activation failure during composition."
+  def compositionActivationTimeout(id: ActivationId) =
+    s"Timeout reached when retrieving activation $id during composition."
+  def compositionComponentInvalid(value: JsValue) =
+    s"Failed to parse action name from json value $value during composition."
+  def compositionComponentNotFound(name: String) =
+    s"""Failed to resolve action with name "$name" during composition."""
+  def compositionComponentNotAccessible(name: String) =
+    s"""Failed entitlement check for action with name "$name" during composition."""
 
   /** Error messages for bad requests where parameters do not conform. */
   val parametersNotAllowed = "Request defines parameters that are not allowed (e.g., reserved properties)."

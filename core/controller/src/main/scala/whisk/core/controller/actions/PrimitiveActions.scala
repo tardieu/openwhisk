@@ -260,12 +260,12 @@ protected[actions] trait PrimitiveActions {
       response.onComplete {
         case Failure(t) =>
           // invocation failure
-          val response = ActivationResponse.whiskError(conductorActivationFailure)
+          val response = ActivationResponse.whiskError(compositionActivationFailure)
           completeAppActivation(user, session, response)
         case Success(Left(activationId)) =>
           // invocation timeout
           session.logs += activationId
-          val response = ActivationResponse.whiskError(conductorRetrieveActivationTimeout(activationId))
+          val response = ActivationResponse.whiskError(compositionActivationTimeout(activationId))
           completeAppActivation(user, session, response)
         case Success(Right(activation)) =>
           // successful invocation
@@ -294,7 +294,7 @@ protected[actions] trait PrimitiveActions {
               Try(next.convertTo[EntityPath]) match {
                 case Failure(t) =>
                   // parsing failure
-                  val response = ActivationResponse.applicationError(componentIsInvalid(next))
+                  val response = ActivationResponse.applicationError(compositionComponentInvalid(next))
                   completeAppActivation(user, session, response)
                 case Success(next) =>
                   // resolve and invoke next action
@@ -305,14 +305,14 @@ protected[actions] trait PrimitiveActions {
                   entitlementProvider.check(user, Privilege.ACTIVATE, Set(resource), noThrottle = true).onComplete {
                     case Failure(t) =>
                       // failed entitlement check
-                      val response = ActivationResponse.applicationError(componentIsNotAccessible(next.toString))
+                      val response = ActivationResponse.applicationError(compositionComponentNotAccessible(next.toString))
                       completeAppActivation(user, session, response)
                     case Success(_) =>
                       // successful entitlement check
                       WhiskActionMetaData.resolveActionAndMergeParameters(entityStore, fqn).onComplete {
                         case Failure(t) =>
                           // resolution failure
-                          val response = ActivationResponse.applicationError(componentIsMissing(next.toString))
+                          val response = ActivationResponse.applicationError(compositionComponentNotFound(next.toString))
                           completeAppActivation(user, session, response)
                         case Success(next) =>
                           if (session.accounting.components >= actionSequenceLimit) {
@@ -359,11 +359,11 @@ protected[actions] trait PrimitiveActions {
         }
         .onComplete {
           case Failure(t) =>
-            val response = ActivationResponse.whiskError(conductorActivationFailure)
+            val response = ActivationResponse.whiskError(compositionActivationFailure)
             completeAppActivation(user, session, response)
           case Success(Left(activationId)) =>
             session.logs += activationId
-            val response = ActivationResponse.whiskError(conductorRetrieveActivationTimeout(activationId))
+            val response = ActivationResponse.whiskError(compositionActivationTimeout(activationId))
             completeAppActivation(user, session, response)
           case Success(Right(activation)) =>
             session.logs += activation.activationId
